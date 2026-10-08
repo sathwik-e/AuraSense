@@ -68,6 +68,30 @@ CoreBluetooth `CBPeer.identifier` is an OS-assigned UUID when the local manager 
 - Use SwiftUI/AppKit and SF Symbols/native controls; no webview UI or downloaded assets/runtime. Treat icon artwork as a bundled vector/PDF or asset-catalog source.
 - Set the deployment target to macOS 26. Deliver a Developer ID signed and notarized DMG, with drag-to-Applications install, version/build metadata, and no separate package manager or runtime installer. First launch still requires macOS permission prompts/settings; credential enrollment is a one-time user step. “Works after DMG install” means no extra runtime dependency, not silent permissions or zero setup.
 
+### First-launch credential onboarding
+
+On first launch, show this simple choice before setting up the credential vault:
+
+> **Welcome to AuraSense**  
+> Choose how you'd like to start.
+>
+> **Import existing credentials**  
+> Bring compatible passwords and passkeys from an existing credential manager.
+>
+> **Start fresh**  
+> Create a new AuraSense credential vault.
+>
+> **Skip for now**
+
+- **Import existing credentials:** use Apple's AuthenticationServices credential-exchange flow where supported. AuraSense acts as an importer via `ASCredentialImportManager`. A compatible source manager must initiate export; AuraSense cannot invoke the importer API to browse/pull another app's database. The user chooses AuraSense in Apple's out-of-process system flow, which mediates app identity and transfer. The onboarding action should explain this handoff and resume when the system launches AuraSense for the exchange. Import only user-selected data, review results/duplicates, then encrypt and save to AuraSense's vault. Passwords and passkeys are in scope; preserve passkey relying-party, user, and credential metadata. Do not assume the iCloud Keychain/Passwords store is directly readable or that its current implementation exports every item. Validate whether Passwords on macOS 26 and iOS 26 can export passwords and passkeys through this flow, and test source-app interoperability, cancellation, and errors on real devices.
+- **Start fresh:** create an empty AuraSense vault and encryption-key hierarchy. Store credential records in a local encrypted database; protect a random vault key with platform Keychain and device-bound key protection/Secure Enclave-backed key operations where supported. Secure Enclave protects or wraps keys; it is not general-purpose storage for imported password/passkey records. Imported passkey private-key material needs encrypted vault storage and a validated key-handling design.
+- **Skip for now:** continue without importing or creating a populated vault. Offer “Set up credential vault” in settings. Do not prompt again until the user initiates setup.
+- **At rest and access:** encrypt imported/created credential data before persistence. Store wrapping keys and secrets in Keychain/Security with restrictive accessibility and access controls. On iPhone, use `LocalAuthentication` and Keychain access control to require Face ID/Touch ID before decrypting sensitive vault material, with a deliberate recovery/fallback policy. AuraSense receives only authentication success/failure; it never accesses, stores, or transmits biometric templates/data. On Mac, use available local owner authentication (such as Touch ID where present); do not assume all Macs have biometrics.
+- **Keep these components distinct:** (1) Apple's iCloud Keychain/Passwords is Apple's private credential service/database; AuraSense has no direct database access and must not scrape, extract, silently copy, or synchronously mirror it. (2) AuraSense's vault is AuraSense-owned encrypted local storage for credentials deliberately imported or created in AuraSense. (3) Apple's Credential Provider/AutoFill extension offers AuraSense's own records to system AutoFill after the user enables the provider; it is not a bulk-import API and grants no access to Apple's vault. (4) AuraSense iPhone biometric authorization is a local gate implemented by an iOS app through LocalAuthentication/Keychain; it does not itself authenticate the Mac. (5) AuraSense's Mac–iPhone protocol is a separate mutually authenticated, encrypted channel for pairing, authorization requests, and optional encrypted vault sync; AuthenticationServices credential exchange does not define this protocol.
+- **Local-first and sync:** keep the primary vault local to each device. Future Mac–iPhone sync must be end-to-end encrypted, mutually authenticated, replay-resistant, and revocable. Credentials must remain usable offline after local authorization; internet access is not required for each credential-use operation. This sync is separate from iCloud Keychain sync.
+- **Architecture delta:** iPhone-side Face ID/Touch ID authorization and a Mac–iPhone secure channel require an AuraSense iPhone app, changing the earlier Mac-only/no-iOS-app assumption for credential-vault features. This does not change the Mac-only BLE presence sensor. If an iPhone app remains out of scope, defer iPhone biometrics and the Mac–iPhone protocol and use local Mac authentication for the Mac vault.
+- **API validation:** Apple's credential exchange APIs support participating credential managers exchanging credentials, including passwords and passkeys, through system-mediated export/import. Validate macOS 26/iOS 26 SDK availability, required credential-provider extension declarations, activity routing, Passwords-app export for passwords versus passkeys, provider enablement UX, and imported credential fidelity before promising the import button works with Apple's Passwords app.
+
 ## Apple platform constraints
 
 - iOS foreground-only apps stop peripheral advertising when suspended. Declaring `bluetooth-peripheral` allows certain background tasks and advertisement, but does not grant an always-running process. The system can terminate the app; state restoration can help resume CoreBluetooth work but is not a liveness guarantee.
@@ -249,6 +273,11 @@ The project progresses incrementally through seven disciplined phases, validatin
 ## References
 
 - BLEUnlock, [README and setup/security requirements](https://github.com/ts1/BLEUnlock): no iPhone app, BLE peer selection, login password stored in Keychain, Accessibility permission for credential entry, delay/RSSI controls, and same-Apple-Account address-resolution claim.
+- Apple, [`ASCredentialImportManager`](https://developer.apple.com/documentation/authenticationservices/ascredentialimportmanager): importer role and system-mediated credential exchange.
+- Apple, [`ASCredentialExportManager`](https://developer.apple.com/documentation/authenticationservices/ascredentialexportmanager): user-selected export flow and system UI.
+- Apple, [AutoFill Credential Provider entitlement](https://developer.apple.com/documentation/BundleResources/Entitlements/com.apple.developer.authentication-services.autofill-credential-provider): separate system AutoFill provider role.
+- Apple, [Accessing Keychain items with Face ID or Touch ID](https://developer.apple.com/documentation/localauthentication/accessing-keychain-items-with-face-id-or-touch-id): biometric-gated Keychain access; biometric data remains inaccessible to the app.
+- Apple, [Protecting keys with the Secure Enclave](https://developer.apple.com/documentation/security/protecting-keys-with-the-secure-enclave): hardware-backed key operations and limitations.
 - Apple, [Core Bluetooth background processing for iOS apps](https://developer.apple.com/library/archive/documentation/NetworkingInternetWeb/Conceptual/CoreBluetooth_concepts/CoreBluetoothBackgroundProcessingForIOSApps/PerformingTasksWhileInTheBackground.html)
 - Apple, [`CBPeripheralManager.startAdvertising`](https://developer.apple.com/documentation/corebluetooth/cbperipheralmanager/startadvertising%28_%3A%29?language=objc)
 - Apple, [`CBCentralManager.scanForPeripherals`](https://developer.apple.com/documentation/corebluetooth/cbcentralmanager/scanforperipherals%28withservices%3Aoptions%3A?changes=la_9___8__5__1&language=objc)

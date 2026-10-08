@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [ -d "/Library/Developer/CommandLineTools" ]; then
+    export DEVELOPER_DIR="${DEVELOPER_DIR:-/Library/Developer/CommandLineTools}"
+fi
+
 # Build the Swift package in release mode
 echo "==> Building AuraSense in release mode..."
 swift build -c release
