@@ -1,10 +1,12 @@
 import Foundation
 
-/// Actions that can be performed on the macOS session.
+/// Actions that can be performed on the macOS session per ARCHITECTURE.md.
 public enum SecurityAction: String, Sendable, Codable {
-    case lockScreen = "Lock Screen"
+    case requestLock = "Request Lock"
     case wakeDisplay = "Wake Display"
+    case requestCredentialEntry = "Request Credential Entry"
     case notify = "Notify"
+    case openSettings = "Open Settings"
     case noOp = "No Operation"
 }
 
@@ -25,7 +27,7 @@ public enum ActionError: LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .phase1ConstraintViolation:
-            return "Phase 1 Constraint Enforced: Locking and unlocking the Mac is strictly prohibited."
+            return "Phase 1 Constraint Enforced: Locking, unlocking, and credential entry on the Mac are strictly prohibited."
         case .actionDisabled(let reason):
             return "Action is disabled: \(reason)"
         case .unauthorized(let reason):

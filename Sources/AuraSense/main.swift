@@ -21,6 +21,12 @@ final class AuraSenseCLI: @unchecked Sendable {
             return
         }
 
+        if let candidateArg = parseCandidateArg(args: args) {
+            let candidateUUID = UUID(uuidString: candidateArg) ?? UUID()
+            let candidate = CandidateDevice(id: candidateUUID, name: candidateArg)
+            diagnostics.classifier.setCandidate(candidate)
+        }
+
         if args.contains("diagnostics") {
             runDiagnostics(asJSON: args.contains("--json"))
             return
@@ -48,12 +54,14 @@ final class AuraSenseCLI: @unchecked Sendable {
             diagnostics            Inspect Bluetooth radio state, authorization, and capabilities
 
         OPTIONS:
+            --candidate <name|id>  Track a specific companion device candidate (unverified local candidate)
             --duration <seconds>   Scan duration in seconds (for 'scan' command, default: 5)
             --json                 Output diagnostic reports in structured JSON format
             -h, --help             Show this help message
 
         NOTE:
             Security lock and unlock actions are disabled in Phase 1.
+            Candidate device identity is local and non-cryptographic per ARCHITECTURE.md.
         """)
     }
 
@@ -152,6 +160,13 @@ final class AuraSenseCLI: @unchecked Sendable {
     private func parseScanDuration(args: [String]) -> TimeInterval? {
         if let idx = args.firstIndex(of: "--duration"), idx + 1 < args.count {
             return TimeInterval(args[idx + 1])
+        }
+        return nil
+    }
+
+    private func parseCandidateArg(args: [String]) -> String? {
+        if let idx = args.firstIndex(of: "--candidate"), idx + 1 < args.count {
+            return args[idx + 1]
         }
         return nil
     }

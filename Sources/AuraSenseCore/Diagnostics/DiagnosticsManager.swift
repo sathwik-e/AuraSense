@@ -6,6 +6,7 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
     public let radioState: RadioState
     public let authorizationStatus: AuthorizationStatus
     public let isScanning: Bool
+    public let candidate: CandidateDevice?
     public let totalDiscoveredCount: Int
     public let activeCount: Int
     public let staleCount: Int
@@ -18,6 +19,7 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
         radioState: RadioState,
         authorizationStatus: AuthorizationStatus,
         isScanning: Bool,
+        candidate: CandidateDevice? = nil,
         peripherals: [PeripheralDiagnosticsRecord],
         recentEvents: [DiagnosticEvent]
     ) {
@@ -25,6 +27,7 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
         self.radioState = radioState
         self.authorizationStatus = authorizationStatus
         self.isScanning = isScanning
+        self.candidate = candidate
         self.peripherals = peripherals
         self.recentEvents = recentEvents
         self.totalDiscoveredCount = peripherals.count
@@ -46,6 +49,14 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
         lines.append(" Radio State:          \(radioState.rawValue)")
         lines.append(" Authorization:        \(authorizationStatus.rawValue)")
         lines.append(" Scanning Active:      \(isScanning ? "YES" : "NO")")
+
+        if let candidate = candidate {
+            lines.append(" Selected Candidate:   \(candidate.name) [\(candidate.id.uuidString)]")
+            lines.append(" Candidate Security:   UNVERIFIED (Local peer selection; public BLE is not cryptographic proof)")
+        } else {
+            lines.append(" Selected Candidate:   None (No device candidate enrolled)")
+        }
+
         lines.append(" Discovered Devices:   \(totalDiscoveredCount) (Active: \(activeCount), Stale: \(staleCount), Lost: \(lostCount))")
         lines.append(" Security Action Lock: INACTIVE (Enforced Phase 1 constraint: No lock/unlock actions)")
         lines.append("--------------------------------------------------------------------------------")
@@ -102,12 +113,18 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
     private var events: [DiagnosticEvent] = []
     private let maxEvents: Int
     public let registry: PeripheralRegistry
+    public let classifier: AdvertisementClassifier
 
     public var onEventLogged: (@Sendable (DiagnosticEvent) -> Void)?
 
-    public init(maxEvents: Int = 200, registry: PeripheralRegistry = PeripheralRegistry()) {
+    public init(
+        maxEvents: Int = 200,
+        registry: PeripheralRegistry = PeripheralRegistry(),
+        classifier: AdvertisementClassifier = AdvertisementClassifier()
+    ) {
         self.maxEvents = maxEvents
         self.registry = registry
+        self.classifier = classifier
     }
 
     /// Records a diagnostic event into the bounded ring buffer.
@@ -149,6 +166,7 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
             radioState: scanner.radioState,
             authorizationStatus: scanner.authorizationStatus,
             isScanning: scanner.isScanning,
+            candidate: classifier.currentCandidate(),
             peripherals: records,
             recentEvents: recent
         )
@@ -167,15 +185,36 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
 
     public func scannerDidDiscover(peripheral: DiscoveredPeripheral) {
         registry.registerOrUpdate(peripheral)
+
+        let allActive = registry.allPeripherals()
+        let classification = classifier.classify(peripheral: peripheral, allActivePeripherals: allActive)
+
+        var meta = [
+            "id": peripheral.id.uuidString,
+            "name": peripheral.name ?? "",
+            "rssi": "\(peripheral.latestRSSI)"
+        ]
+
+        switch classification {
+        case .matched(let candidate):
+            meta["classification"] = "Matched Candidate (\(candidate.name))"
+        case .ambiguous(let count, let reason):
+            meta["classification"] = "AMBIGUOUS (\(count) peers): \(reason)"
+            log(
+                level: .warning,
+                category: "BLE.Classifier",
+                message: "Ambiguous identity detected for candidate. Forcing UNKNOWN: \(reason)",
+                metadata: meta
+            )
+        case .untrusted(let reason):
+            meta["classification"] = "Untrusted: \(reason)"
+        }
+
         log(
             level: .info,
             category: "BLE.Discovery",
             message: "Discovered peripheral \(peripheral.name ?? "<unnamed>") [\(peripheral.id.uuidString)] RSSI: \(peripheral.latestRSSI) dBm",
-            metadata: [
-                "id": peripheral.id.uuidString,
-                "name": peripheral.name ?? "",
-                "rssi": "\(peripheral.latestRSSI)"
-            ]
+            metadata: meta
         )
     }
 
