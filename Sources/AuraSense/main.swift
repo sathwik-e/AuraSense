@@ -3,13 +3,18 @@ import AuraSenseCore
 
 final class AuraSenseCLI: @unchecked Sendable {
     private let scanner: any BLEScannerProtocol
+    private let trustStore: any CandidateTrustStoreProtocol
     private let diagnostics: DiagnosticsManager
     private var isRunning: Bool = false
     private let runLoop = RunLoop.current
 
-    init(scanner: any BLEScannerProtocol = CoreBluetoothScanner()) {
+    init(
+        scanner: any BLEScannerProtocol = CoreBluetoothScanner(),
+        trustStore: any CandidateTrustStoreProtocol = PersistentCandidateTrustStore()
+    ) {
         self.scanner = scanner
-        self.diagnostics = DiagnosticsManager()
+        self.trustStore = trustStore
+        self.diagnostics = DiagnosticsManager(trustStore: trustStore)
         self.scanner.delegate = diagnostics
     }
 
@@ -21,10 +26,26 @@ final class AuraSenseCLI: @unchecked Sendable {
             return
         }
 
+        if args.contains("register") {
+            handleRegister(args: args)
+            return
+        }
+
+        if args.contains("unregister") {
+            handleUnregister()
+            return
+        }
+
+        if args.contains("candidate") {
+            handleShowCandidate(asJSON: args.contains("--json"))
+            return
+        }
+
         if let candidateArg = parseCandidateArg(args: args) {
             let candidateUUID = UUID(uuidString: candidateArg) ?? UUID()
             let candidate = CandidateDevice(id: candidateUUID, name: candidateArg)
-            diagnostics.classifier.setCandidate(candidate)
+            try? trustStore.register(candidate: candidate)
+            diagnostics.gate.syncCandidate()
         }
 
         if args.contains("diagnostics") {
@@ -52,17 +73,95 @@ final class AuraSenseCLI: @unchecked Sendable {
             agent (default)        Run continuous BLE discovery and live diagnostics monitoring
             scan                   Scan for nearby BLE peripherals for a set duration and report
             diagnostics            Inspect Bluetooth radio state, authorization, and capabilities
+            candidate              Show currently registered candidate device and security disclaimers
+            register <UUID>        Register a discovered BLE peripheral as the trusted candidate
+            unregister             Unregister the current candidate device
 
         OPTIONS:
-            --candidate <name|id>  Track a specific companion device candidate (unverified local candidate)
+            --name <name>          Optional friendly name for registration (e.g. "Sathwik's iPhone")
+            --candidate <name|id>  Ad-hoc track a specific candidate for this session
             --duration <seconds>   Scan duration in seconds (for 'scan' command, default: 5)
             --json                 Output diagnostic reports in structured JSON format
             -h, --help             Show this help message
 
-        NOTE:
-            Security lock and unlock actions are disabled in Phase 1.
+        SECURITY NOTICE:
+            Phase 2 enforces that ONLY the registered candidate passes through the Security Action Gate.
+            Non-trusted devices are completely blocked. Mac locking remains disabled in Phase 2.
             Candidate device identity is local and non-cryptographic per ARCHITECTURE.md.
         """)
+    }
+
+    private func handleRegister(args: [String]) {
+        guard let regIdx = args.firstIndex(of: "register"), regIdx + 1 < args.count else {
+            print("Error: Please specify the peripheral UUID to register. Example: aurasense register <UUID>")
+            return
+        }
+
+        let rawUUID = args[regIdx + 1]
+        guard let uuid = UUID(uuidString: rawUUID) else {
+            print("Error: Invalid UUID format: '\(rawUUID)'")
+            return
+        }
+
+        let name: String
+        if let nameIdx = args.firstIndex(of: "--name"), nameIdx + 1 < args.count {
+            name = args[nameIdx + 1]
+        } else {
+            name = "Candidate-\(uuid.uuidString.prefix(6))"
+        }
+
+        let candidate = CandidateDevice(id: uuid, name: name)
+        do {
+            try trustStore.register(candidate: candidate)
+            diagnostics.gate.syncCandidate()
+            print("Successfully registered candidate device:")
+            print("  ID:                  \(candidate.id.uuidString)")
+            print("  Name:                \(candidate.name)")
+            print("  Security Disclaimer: \(candidate.securityDisclaimer)")
+        } catch {
+            print("Failed to register candidate: \(error.localizedDescription)")
+        }
+    }
+
+    private func handleUnregister() {
+        do {
+            try trustStore.unregister()
+            diagnostics.gate.syncCandidate()
+            print("Candidate device unregistered successfully. Security gate is now closed to all devices.")
+        } catch {
+            print("Failed to unregister candidate: \(error.localizedDescription)")
+        }
+    }
+
+    private func handleShowCandidate(asJSON: Bool) {
+        guard let candidate = trustStore.registeredCandidate else {
+            if asJSON {
+                print("{\"registered\": false}")
+            } else {
+                print("No candidate device is currently registered.")
+                print("Use 'aurasense scan' to discover devices, then 'aurasense register <UUID>' to register.")
+            }
+            return
+        }
+
+        if asJSON {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            if let data = try? encoder.encode(candidate), let str = String(data: data, encoding: .utf8) {
+                print(str)
+            }
+        } else {
+            print("================================================================================")
+            print(" Registered Candidate Companion Device")
+            print("================================================================================")
+            print(" Identifier:           \(candidate.id.uuidString)")
+            print(" Name:                 \(candidate.name)")
+            print(" Enrolled At:          \(candidate.selectedAt)")
+            print(" Cryptographic Proof:  NONE (Local unverified peer; public BLE is not authenticated)")
+            print(" Security Disclaimer:  \(candidate.securityDisclaimer)")
+            print("================================================================================")
+        }
     }
 
     private func runDiagnostics(asJSON: Bool) {
@@ -111,6 +210,11 @@ final class AuraSenseCLI: @unchecked Sendable {
     private func runAgentMode() {
         print(ConsoleDiagnosticsView.renderLiveHeader())
         print("Starting AuraSense background agent...")
+        if let candidate = trustStore.registeredCandidate {
+            print("Monitoring candidate: \(candidate.name) [\(candidate.id.uuidString)]")
+        } else {
+            print("Notice: No candidate registered. Security gate will reject all incoming devices.")
+        }
         print("Press Ctrl+C to terminate.")
 
         setupSignalHandlers()
@@ -129,7 +233,6 @@ final class AuraSenseCLI: @unchecked Sendable {
 
         isRunning = true
 
-        // Timer for periodic status printouts every 5 seconds
         let timer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             let snapshot = self.diagnostics.snapshot(from: self.scanner)

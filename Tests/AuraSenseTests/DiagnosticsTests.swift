@@ -53,4 +53,27 @@ struct DiagnosticsTests {
         #expect(report.contains("Table Device"))
         #expect(report.contains("Security Action Lock: INACTIVE"))
     }
+
+    @Test func testSecurityGateReportingInSnapshot() throws {
+        let scanner = MockBLEScanner(initialRadioState: .poweredOn, initialAuthorization: .allowedAlways)
+        let store = InMemoryCandidateTrustStore()
+        let candidateID = UUID()
+        let candidate = CandidateDevice(id: candidateID, name: "VIP iPhone")
+        try store.register(candidate: candidate)
+
+        let diagnostics = DiagnosticsManager(trustStore: store)
+        scanner.delegate = diagnostics
+
+        // Discover candidate (admitted)
+        _ = scanner.simulatePeripheralDiscovery(id: candidateID, name: "VIP iPhone", rssi: -50)
+        // Discover untrusted device (blocked)
+        _ = scanner.simulatePeripheralDiscovery(id: UUID(), name: "Unknown Rogue Device", rssi: -80)
+
+        let snapshot = diagnostics.snapshot(from: scanner)
+        #expect(snapshot.candidate?.id == candidateID)
+        #expect(snapshot.gateAdmittedCount == 1)
+        #expect(snapshot.gateBlockedCount == 1)
+        #expect(snapshot.formattedReport.contains("VIP iPhone"))
+        #expect(snapshot.formattedReport.contains("Security Gate Filter: Admitted: 1 | Blocked: 1"))
+    }
 }

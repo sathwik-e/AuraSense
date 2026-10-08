@@ -11,6 +11,9 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
     public let activeCount: Int
     public let staleCount: Int
     public let lostCount: Int
+    public let gateAdmittedCount: Int
+    public let gateBlockedCount: Int
+    public let gateAmbiguityCount: Int
     public let peripherals: [PeripheralDiagnosticsRecord]
     public let recentEvents: [DiagnosticEvent]
 
@@ -20,6 +23,9 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
         authorizationStatus: AuthorizationStatus,
         isScanning: Bool,
         candidate: CandidateDevice? = nil,
+        gateAdmittedCount: Int = 0,
+        gateBlockedCount: Int = 0,
+        gateAmbiguityCount: Int = 0,
         peripherals: [PeripheralDiagnosticsRecord],
         recentEvents: [DiagnosticEvent]
     ) {
@@ -28,6 +34,9 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
         self.authorizationStatus = authorizationStatus
         self.isScanning = isScanning
         self.candidate = candidate
+        self.gateAdmittedCount = gateAdmittedCount
+        self.gateBlockedCount = gateBlockedCount
+        self.gateAmbiguityCount = gateAmbiguityCount
         self.peripherals = peripherals
         self.recentEvents = recentEvents
         self.totalDiscoveredCount = peripherals.count
@@ -57,8 +66,9 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
             lines.append(" Selected Candidate:   None (No device candidate enrolled)")
         }
 
+        lines.append(" Security Gate Filter: Admitted: \(gateAdmittedCount) | Blocked: \(gateBlockedCount) | Ambiguities: \(gateAmbiguityCount)")
         lines.append(" Discovered Devices:   \(totalDiscoveredCount) (Active: \(activeCount), Stale: \(staleCount), Lost: \(lostCount))")
-        lines.append(" Security Action Lock: INACTIVE (Enforced Phase 1 constraint: No lock/unlock actions)")
+        lines.append(" Security Action Lock: INACTIVE (Enforced Phase 2 constraint: No lock/unlock actions)")
         lines.append("--------------------------------------------------------------------------------")
         let hID = Self.pad("Peripheral Identifier", length: 36)
         let hName = Self.pad("Device Name", length: 18)
@@ -113,18 +123,24 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
     private var events: [DiagnosticEvent] = []
     private let maxEvents: Int
     public let registry: PeripheralRegistry
+    public let trustStore: any CandidateTrustStoreProtocol
     public let classifier: AdvertisementClassifier
+    public let gate: SecurityActionGate
 
     public var onEventLogged: (@Sendable (DiagnosticEvent) -> Void)?
+    public var onGateDecision: (@Sendable (GateDecision) -> Void)?
 
     public init(
         maxEvents: Int = 200,
         registry: PeripheralRegistry = PeripheralRegistry(),
+        trustStore: any CandidateTrustStoreProtocol = InMemoryCandidateTrustStore(),
         classifier: AdvertisementClassifier = AdvertisementClassifier()
     ) {
         self.maxEvents = maxEvents
         self.registry = registry
+        self.trustStore = trustStore
         self.classifier = classifier
+        self.gate = SecurityActionGate(trustStore: trustStore, classifier: classifier)
     }
 
     /// Records a diagnostic event into the bounded ring buffer.
@@ -166,7 +182,10 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
             radioState: scanner.radioState,
             authorizationStatus: scanner.authorizationStatus,
             isScanning: scanner.isScanning,
-            candidate: classifier.currentCandidate(),
+            candidate: trustStore.registeredCandidate,
+            gateAdmittedCount: gate.admittedCount,
+            gateBlockedCount: gate.blockedCount,
+            gateAmbiguityCount: gate.ambiguityCount,
             peripherals: records,
             recentEvents: recent
         )
@@ -187,7 +206,8 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
         registry.registerOrUpdate(peripheral)
 
         let allActive = registry.allPeripherals()
-        let classification = classifier.classify(peripheral: peripheral, allActivePeripherals: allActive)
+        let decision = gate.evaluate(peripheral: peripheral, allActivePeripherals: allActive)
+        onGateDecision?(decision)
 
         var meta = [
             "id": peripheral.id.uuidString,
@@ -195,31 +215,51 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
             "rssi": "\(peripheral.latestRSSI)"
         ]
 
-        switch classification {
-        case .matched(let candidate):
-            meta["classification"] = "Matched Candidate (\(candidate.name))"
-        case .ambiguous(let count, let reason):
-            meta["classification"] = "AMBIGUOUS (\(count) peers): \(reason)"
+        switch decision {
+        case .admitted(let candidate, _, _):
+            meta["gate"] = "ADMITTED"
+            meta["candidate"] = candidate.name
             log(
-                level: .warning,
-                category: "BLE.Classifier",
-                message: "Ambiguous identity detected for candidate. Forcing UNKNOWN: \(reason)",
+                level: .info,
+                category: "BLE.Discovery",
+                message: "[Gate: ADMITTED] Observed candidate \(candidate.name) [\(peripheral.id.uuidString)] RSSI: \(peripheral.latestRSSI) dBm",
                 metadata: meta
             )
-        case .untrusted(let reason):
-            meta["classification"] = "Untrusted: \(reason)"
-        }
 
-        log(
-            level: .info,
-            category: "BLE.Discovery",
-            message: "Discovered peripheral \(peripheral.name ?? "<unnamed>") [\(peripheral.id.uuidString)] RSSI: \(peripheral.latestRSSI) dBm",
-            metadata: meta
-        )
+        case .blocked(let reason):
+            meta["gate"] = "BLOCKED"
+            switch reason {
+            case .noCandidateRegistered:
+                meta["reason"] = "No candidate registered"
+            case .untrustedDevice:
+                meta["reason"] = "Untrusted device"
+            case .ambiguousCandidate(let count, let explanation):
+                meta["reason"] = "Ambiguous candidate (\(count) peers)"
+                log(
+                    level: .warning,
+                    category: "Security.Gate",
+                    message: "Ambiguous identity detected for candidate. Forcing UNKNOWN: \(explanation)",
+                    metadata: meta
+                )
+            }
+            log(
+                level: .debug,
+                category: "BLE.Discovery",
+                message: "[Gate: BLOCKED] Discovered non-candidate peripheral \(peripheral.name ?? "<unnamed>") [\(peripheral.id.uuidString)] RSSI: \(peripheral.latestRSSI) dBm",
+                metadata: meta
+            )
+        }
     }
 
     public func scannerDidUpdateRSSI(peripheralID: UUID, rssi: Int, timestamp: Date) {
         registry.updateRSSI(peripheralID: peripheralID, rssi: rssi, timestamp: timestamp)
+
+        if let peripheral = registry.peripheral(for: peripheralID) {
+            let allActive = registry.allPeripherals()
+            let decision = gate.evaluate(peripheral: peripheral, allActivePeripherals: allActive)
+            onGateDecision?(decision)
+        }
+
         log(
             level: .debug,
             category: "BLE.RSSI",
