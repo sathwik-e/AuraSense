@@ -8,15 +8,22 @@ public final class PolicyEngine: @unchecked Sendable {
 
     // User policy configuration
     public var isAutoLockEnabled: Bool
+    public var isAutoWakeEnabled: Bool
     public var lockOnUnknown: Bool
 
-    // Idempotency latch: ensures only ONE lock request is emitted per departure cycle
+    // Idempotency latches
     private var hasLockedForCurrentDeparture: Bool = false
+    private var hasWokenForCurrentArrival: Bool = false
 
-    // Telemetry
+    // Telemetry - Locks
     private var _lockAttemptsCount: Int = 0
     private var _locksExecutedCount: Int = 0
     private var _locksSuppressedCount: Int = 0
+
+    // Telemetry - Wakes
+    private var _wakeAttemptsCount: Int = 0
+    private var _wakesExecutedCount: Int = 0
+    private var _wakesSuppressedCount: Int = 0
 
     public var lockAttemptsCount: Int {
         lock.lock()
@@ -36,15 +43,42 @@ public final class PolicyEngine: @unchecked Sendable {
         return _locksSuppressedCount
     }
 
+    public var wakeAttemptsCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _wakeAttemptsCount
+    }
+
+    public var wakesExecutedCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _wakesExecutedCount
+    }
+
+    public var wakesSuppressedCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _wakesSuppressedCount
+    }
+
     public var onPolicyDecision: (@Sendable (SecurityAction, ActionResult) -> Void)?
+
+    private enum PolicyTransitionDecision {
+        case none
+        case lock
+        case wake
+        case rejected(SecurityAction, String)
+    }
 
     public init(
         actionProvider: any ActionProviderProtocol,
         isAutoLockEnabled: Bool = false,
+        isAutoWakeEnabled: Bool = true,
         lockOnUnknown: Bool = false
     ) {
         self.actionProvider = actionProvider
         self.isAutoLockEnabled = isAutoLockEnabled
+        self.isAutoWakeEnabled = isAutoWakeEnabled
         self.lockOnUnknown = lockOnUnknown
     }
 
@@ -55,76 +89,110 @@ public final class PolicyEngine: @unchecked Sendable {
         to newState: ProximityState,
         reason: String
     ) async -> ActionResult? {
-        let (shouldLock, rejectedResult) = evaluateTransitionSync(oldState: oldState, newState: newState)
-        if let rejected = rejectedResult {
-            onPolicyDecision?(.requestLock, rejected)
-            return rejected
-        }
+        let decision = evaluateTransitionSync(oldState: oldState, newState: newState)
 
-        guard shouldLock else {
+        switch decision {
+        case .none:
             return nil
-        }
 
-        do {
-            let result = try await actionProvider.requestLock()
-            recordExecutionSuccess()
-            onPolicyDecision?(.requestLock, result)
+        case .rejected(let action, let reasonText):
+            let result = ActionResult.rejected(action, reason: reasonText)
+            onPolicyDecision?(action, result)
             return result
-        } catch {
-            let result = ActionResult.rejected(.requestLock, reason: "Lock request execution failed: \(error.localizedDescription)")
-            onPolicyDecision?(.requestLock, result)
-            return result
+
+        case .lock:
+            do {
+                let result = try await actionProvider.requestLock()
+                recordLockSuccess()
+                onPolicyDecision?(.requestLock, result)
+                return result
+            } catch {
+                let result = ActionResult.rejected(.requestLock, reason: "Lock request execution failed: \(error.localizedDescription)")
+                onPolicyDecision?(.requestLock, result)
+                return result
+            }
+
+        case .wake:
+            do {
+                let result = try await actionProvider.wakeDisplay()
+                recordWakeSuccess()
+                onPolicyDecision?(.wakeDisplay, result)
+                return result
+            } catch {
+                let result = ActionResult.rejected(.wakeDisplay, reason: "Display wake execution failed: \(error.localizedDescription)")
+                onPolicyDecision?(.wakeDisplay, result)
+                return result
+            }
         }
     }
 
     private func evaluateTransitionSync(
         oldState: ProximityState,
         newState: ProximityState
-    ) -> (shouldLock: Bool, rejectedResult: ActionResult?) {
+    ) -> PolicyTransitionDecision {
         lock.lock()
         defer { lock.unlock() }
 
-        // 1. If returning to NEAR: reset the departure lock latch
+        // 1. If entering NEAR: evaluate display wake policy
         if newState.isNear {
             hasLockedForCurrentDeparture = false
-            return (false, nil)
+
+            if !oldState.isNear && !hasWokenForCurrentArrival {
+                hasWokenForCurrentArrival = true
+                guard isAutoWakeEnabled else {
+                    _wakesSuppressedCount += 1
+                    return .rejected(.wakeDisplay, "Auto-wake is disabled by user policy")
+                }
+                _wakeAttemptsCount += 1
+                return .wake
+            }
+            return .none
         }
 
         // 2. If entering FAR: evaluate lock policy
         if newState.isFar {
+            hasWokenForCurrentArrival = false
+
             guard isAutoLockEnabled else {
                 _locksSuppressedCount += 1
-                return (false, .rejected(.requestLock, reason: "Auto-lock is disabled by user policy"))
+                return .rejected(.requestLock, "Auto-lock is disabled by user policy")
             }
 
             guard !hasLockedForCurrentDeparture else {
                 _locksSuppressedCount += 1
-                return (false, .rejected(.requestLock, reason: "Lock request suppressed: already locked for this departure (idempotent)"))
+                return .rejected(.requestLock, "Lock request suppressed: already locked for this departure (idempotent)")
             }
 
             hasLockedForCurrentDeparture = true
             _lockAttemptsCount += 1
-            return (true, nil)
+            return .lock
         }
 
         // 3. If entering UNKNOWN:
         if newState.isUnknown {
+            hasWokenForCurrentArrival = false
+
             if lockOnUnknown && isAutoLockEnabled && !hasLockedForCurrentDeparture {
                 hasLockedForCurrentDeparture = true
                 _lockAttemptsCount += 1
-                return (true, nil)
-            } else {
-                return (false, nil)
+                return .lock
             }
+            return .none
         }
 
-        return (false, nil)
+        return .none
     }
 
-    private func recordExecutionSuccess() {
+    private func recordLockSuccess() {
         lock.lock()
         defer { lock.unlock() }
         _locksExecutedCount += 1
+    }
+
+    private func recordWakeSuccess() {
+        lock.lock()
+        defer { lock.unlock() }
+        _wakesExecutedCount += 1
     }
 
     /// Resets policy latches and metrics.
@@ -132,8 +200,12 @@ public final class PolicyEngine: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         hasLockedForCurrentDeparture = false
+        hasWokenForCurrentArrival = false
         _lockAttemptsCount = 0
         _locksExecutedCount = 0
         _locksSuppressedCount = 0
+        _wakeAttemptsCount = 0
+        _wakesExecutedCount = 0
+        _wakesSuppressedCount = 0
     }
 }

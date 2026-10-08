@@ -48,8 +48,20 @@ final class AuraSenseCLI: @unchecked Sendable {
             diagnostics.gate.syncCandidate()
         }
 
+        if let adapter = diagnostics.policyEngine.actionProvider as? MacOSActionAdapter {
+            let isLive = args.contains("--live-action") || args.contains("--live-lock") || args.contains("--live-wake")
+            adapter.isDryRun = !isLive
+            if let synth = adapter.inputSynthesizer as? MacOSInputSynthesizer {
+                synth.isDryRun = !isLive
+            }
+        }
+
+        if args.contains("--no-wake") {
+            diagnostics.policyEngine.isAutoWakeEnabled = false
+        }
+
         if args.contains("--auto-lock") || args.contains("--enable-lock") {
-            let isLive = args.contains("--live-lock")
+            let isLive = args.contains("--live-lock") || args.contains("--live-action")
             diagnostics.policyEngine.isAutoLockEnabled = true
             diagnostics.policyEngine.reset()
             if isLive {
@@ -93,14 +105,16 @@ final class AuraSenseCLI: @unchecked Sendable {
             --candidate <name|id>  Ad-hoc track a specific candidate for this session
             --auto-lock            Enable automatic locking upon completed departure countdown (dry-run by default)
             --live-lock            With --auto-lock: execute real macOS screen locking via SACLockScreenImmediate
+            --no-wake              Disable automatic display wake when returning to NEAR proximity
+            --live-wake            Execute real macOS display wake via IOPMAssertion / caffeinate
             --duration <seconds>   Scan duration in seconds (for 'scan' command, default: 5)
             --json                 Output diagnostic reports in structured JSON format
             -h, --help             Show this help message
 
         SECURITY NOTICE:
-            Phase 4 introduces automatic Mac locking triggered strictly upon completed departure countdown.
-            Locking is idempotent and disabled during UNKNOWN states or identity ambiguity.
-            Auto-lock requires explicit opt-in (--auto-lock).
+            Phase 4/5 introduces automatic Mac locking and display wake triggered by proximity transitions.
+            Display wake and input synthesis operate in an isolated action layer.
+            Plaintext credential injection is strictly disabled. Auto-lock requires explicit opt-in (--auto-lock).
         """)
     }
 

@@ -52,6 +52,7 @@ struct DiagnosticsTests {
         #expect(report.contains("AuraSense Proximity & BLE Diagnostics"))
         #expect(report.contains("Table Device"))
         #expect(report.contains("Auto-Lock Policy:     DISABLED"))
+        #expect(report.contains("Auto-Wake Policy:     ENABLED"))
     }
 
     @Test func testSecurityGateReportingInSnapshot() throws {

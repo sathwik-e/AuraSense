@@ -36,7 +36,7 @@ public final class MockActionProvider: ActionProviderProtocol, @unchecked Sendab
 
     public init(
         isLockSupported: Bool = true,
-        isWakeSupported: Bool = false,
+        isWakeSupported: Bool = true,
         isCredentialEntrySupported: Bool = false,
         shouldSucceed: Bool = true
     ) {

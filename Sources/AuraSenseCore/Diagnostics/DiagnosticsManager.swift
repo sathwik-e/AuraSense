@@ -11,6 +11,8 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
     public let smoothedRSSI: Double?
     public let isAutoLockEnabled: Bool
     public let locksExecutedCount: Int
+    public let isAutoWakeEnabled: Bool
+    public let wakesExecutedCount: Int
     public let totalDiscoveredCount: Int
     public let activeCount: Int
     public let staleCount: Int
@@ -31,6 +33,8 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
         smoothedRSSI: Double? = nil,
         isAutoLockEnabled: Bool = false,
         locksExecutedCount: Int = 0,
+        isAutoWakeEnabled: Bool = true,
+        wakesExecutedCount: Int = 0,
         gateAdmittedCount: Int = 0,
         gateBlockedCount: Int = 0,
         gateAmbiguityCount: Int = 0,
@@ -46,6 +50,8 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
         self.smoothedRSSI = smoothedRSSI
         self.isAutoLockEnabled = isAutoLockEnabled
         self.locksExecutedCount = locksExecutedCount
+        self.isAutoWakeEnabled = isAutoWakeEnabled
+        self.wakesExecutedCount = wakesExecutedCount
         self.gateAdmittedCount = gateAdmittedCount
         self.gateBlockedCount = gateBlockedCount
         self.gateAmbiguityCount = gateAmbiguityCount
@@ -82,6 +88,7 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
         lines.append(" Proximity State:      \(proximityState.displayLabel)")
         lines.append(" Smoothed RSSI:        \(smoothedStr)")
         lines.append(" Auto-Lock Policy:     \(isAutoLockEnabled ? "ENABLED" : "DISABLED") (Locks Executed: \(locksExecutedCount))")
+        lines.append(" Auto-Wake Policy:     \(isAutoWakeEnabled ? "ENABLED" : "DISABLED") (Wakes Executed: \(wakesExecutedCount))")
         lines.append(" Security Gate Filter: Admitted: \(gateAdmittedCount) | Blocked: \(gateBlockedCount) | Ambiguities: \(gateAmbiguityCount)")
         lines.append(" Discovered Devices:   \(totalDiscoveredCount) (Active: \(activeCount), Stale: \(staleCount), Lost: \(lostCount))")
         lines.append("--------------------------------------------------------------------------------")
@@ -237,6 +244,8 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
             smoothedRSSI: proximityEngine.filter.currentSmoothedRSSI,
             isAutoLockEnabled: policyEngine.isAutoLockEnabled,
             locksExecutedCount: policyEngine.locksExecutedCount,
+            isAutoWakeEnabled: policyEngine.isAutoWakeEnabled,
+            wakesExecutedCount: policyEngine.wakesExecutedCount,
             gateAdmittedCount: gate.admittedCount,
             gateBlockedCount: gate.blockedCount,
             gateAmbiguityCount: gate.ambiguityCount,
