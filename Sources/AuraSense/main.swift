@@ -48,6 +48,17 @@ final class AuraSenseCLI: @unchecked Sendable {
             diagnostics.gate.syncCandidate()
         }
 
+        if args.contains("--auto-lock") || args.contains("--enable-lock") {
+            let isLive = args.contains("--live-lock")
+            diagnostics.policyEngine.isAutoLockEnabled = true
+            diagnostics.policyEngine.reset()
+            if isLive {
+                print("Notice: LIVE system auto-lock enabled. Mac will lock upon confirmed departure.")
+            } else {
+                print("Notice: Auto-lock policy enabled in Dry-Run mode (simulated without locking display).")
+            }
+        }
+
         if args.contains("diagnostics") {
             runDiagnostics(asJSON: args.contains("--json"))
             return
@@ -80,14 +91,16 @@ final class AuraSenseCLI: @unchecked Sendable {
         OPTIONS:
             --name <name>          Optional friendly name for registration (e.g. "Sathwik's iPhone")
             --candidate <name|id>  Ad-hoc track a specific candidate for this session
+            --auto-lock            Enable automatic locking upon completed departure countdown (dry-run by default)
+            --live-lock            With --auto-lock: execute real macOS screen locking via SACLockScreenImmediate
             --duration <seconds>   Scan duration in seconds (for 'scan' command, default: 5)
             --json                 Output diagnostic reports in structured JSON format
             -h, --help             Show this help message
 
         SECURITY NOTICE:
-            Phase 2 enforces that ONLY the registered candidate passes through the Security Action Gate.
-            Non-trusted devices are completely blocked. Mac locking remains disabled in Phase 2.
-            Candidate device identity is local and non-cryptographic per ARCHITECTURE.md.
+            Phase 4 introduces automatic Mac locking triggered strictly upon completed departure countdown.
+            Locking is idempotent and disabled during UNKNOWN states or identity ambiguity.
+            Auto-lock requires explicit opt-in (--auto-lock).
         """)
     }
 

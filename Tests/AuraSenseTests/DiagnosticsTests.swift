@@ -51,7 +51,7 @@ struct DiagnosticsTests {
         let report = snapshot.formattedReport
         #expect(report.contains("AuraSense Proximity & BLE Diagnostics"))
         #expect(report.contains("Table Device"))
-        #expect(report.contains("Security Action Lock: INACTIVE"))
+        #expect(report.contains("Auto-Lock Policy:     DISABLED"))
     }
 
     @Test func testSecurityGateReportingInSnapshot() throws {

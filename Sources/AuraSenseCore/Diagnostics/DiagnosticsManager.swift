@@ -9,6 +9,8 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
     public let candidate: CandidateDevice?
     public let proximityState: ProximityState
     public let smoothedRSSI: Double?
+    public let isAutoLockEnabled: Bool
+    public let locksExecutedCount: Int
     public let totalDiscoveredCount: Int
     public let activeCount: Int
     public let staleCount: Int
@@ -27,6 +29,8 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
         candidate: CandidateDevice? = nil,
         proximityState: ProximityState = .unknown(reason: "Uninitialized"),
         smoothedRSSI: Double? = nil,
+        isAutoLockEnabled: Bool = false,
+        locksExecutedCount: Int = 0,
         gateAdmittedCount: Int = 0,
         gateBlockedCount: Int = 0,
         gateAmbiguityCount: Int = 0,
@@ -40,6 +44,8 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
         self.candidate = candidate
         self.proximityState = proximityState
         self.smoothedRSSI = smoothedRSSI
+        self.isAutoLockEnabled = isAutoLockEnabled
+        self.locksExecutedCount = locksExecutedCount
         self.gateAdmittedCount = gateAdmittedCount
         self.gateBlockedCount = gateBlockedCount
         self.gateAmbiguityCount = gateAmbiguityCount
@@ -75,9 +81,9 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
         let smoothedStr = smoothedRSSI != nil ? String(format: "%.1f dBm", smoothedRSSI!) : "N/A"
         lines.append(" Proximity State:      \(proximityState.displayLabel)")
         lines.append(" Smoothed RSSI:        \(smoothedStr)")
+        lines.append(" Auto-Lock Policy:     \(isAutoLockEnabled ? "ENABLED" : "DISABLED") (Locks Executed: \(locksExecutedCount))")
         lines.append(" Security Gate Filter: Admitted: \(gateAdmittedCount) | Blocked: \(gateBlockedCount) | Ambiguities: \(gateAmbiguityCount)")
         lines.append(" Discovered Devices:   \(totalDiscoveredCount) (Active: \(activeCount), Stale: \(staleCount), Lost: \(lostCount))")
-        lines.append(" Security Action Lock: INACTIVE (Enforced Phase 3 constraint: No lock/unlock actions)")
         lines.append("--------------------------------------------------------------------------------")
         let hID = Self.pad("Peripheral Identifier", length: 36)
         let hName = Self.pad("Device Name", length: 18)
@@ -136,6 +142,7 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
     public let classifier: AdvertisementClassifier
     public let gate: SecurityActionGate
     public let proximityEngine: ProximityEngine
+    public let policyEngine: PolicyEngine
 
     public var onEventLogged: (@Sendable (DiagnosticEvent) -> Void)?
     public var onGateDecision: (@Sendable (GateDecision) -> Void)?
@@ -145,7 +152,8 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
         registry: PeripheralRegistry = PeripheralRegistry(),
         trustStore: any CandidateTrustStoreProtocol = InMemoryCandidateTrustStore(),
         classifier: AdvertisementClassifier = AdvertisementClassifier(),
-        proximityEngine: ProximityEngine = ProximityEngine()
+        proximityEngine: ProximityEngine = ProximityEngine(),
+        policyEngine: PolicyEngine? = nil
     ) {
         self.maxEvents = maxEvents
         self.registry = registry
@@ -153,6 +161,7 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
         self.classifier = classifier
         self.gate = SecurityActionGate(trustStore: trustStore, classifier: classifier)
         self.proximityEngine = proximityEngine
+        self.policyEngine = policyEngine ?? PolicyEngine(actionProvider: MacOSActionAdapter(isDryRun: true))
 
         self.proximityEngine.updateCandidateAvailability(hasCandidate: trustStore.registeredCandidate != nil)
 
@@ -162,6 +171,17 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
                 category: "Proximity.FSM",
                 message: "Transition [\(oldState.displayLabel)] -> [\(newState.displayLabel)]: \(reason)"
             )
+
+            guard let self = self else { return }
+            Task {
+                if let decision = await self.policyEngine.handleStateTransition(from: oldState, to: newState, reason: reason) {
+                    self.log(
+                        level: .info,
+                        category: "Policy.Action",
+                        message: "Policy decision: \(decision)"
+                    )
+                }
+            }
         }
 
         self.proximityEngine.onCountdownTick = { [weak self] sec in
@@ -204,7 +224,7 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
         return events
     }
 
-    /// Creates an immutable diagnostic snapshot using current scanner, registry, and proximity state.
+    /// Creates an immutable diagnostic snapshot using current scanner, registry, proximity, and policy state.
     public func snapshot(from scanner: any BLEScannerProtocol) -> DiagnosticsSnapshot {
         let records = registry.diagnosticsRecords()
         let recent = recentEvents()
@@ -215,6 +235,8 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
             candidate: trustStore.registeredCandidate,
             proximityState: proximityEngine.currentState,
             smoothedRSSI: proximityEngine.filter.currentSmoothedRSSI,
+            isAutoLockEnabled: policyEngine.isAutoLockEnabled,
+            locksExecutedCount: policyEngine.locksExecutedCount,
             gateAdmittedCount: gate.admittedCount,
             gateBlockedCount: gate.blockedCount,
             gateAmbiguityCount: gate.ambiguityCount,
