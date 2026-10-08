@@ -1,10 +1,17 @@
 import Foundation
+import AppKit
 import AuraSenseCore
 
+@MainActor
 final class AuraSenseCLI: @unchecked Sendable {
     private let scanner: any BLEScannerProtocol
     private let trustStore: any CandidateTrustStoreProtocol
     private let diagnostics: DiagnosticsManager
+    private let logger: FileLogger
+    private let settingsStore: FileSettingsStore
+    private let sleepWakeMonitor: SystemSleepWakeMonitor
+    private let recoveryCoordinator: BluetoothRecoveryCoordinator
+    private let launchAtLoginManager: SMAppServiceLaunchAtLoginManager
     private var isRunning: Bool = false
     private let runLoop = RunLoop.current
 
@@ -14,8 +21,58 @@ final class AuraSenseCLI: @unchecked Sendable {
     ) {
         self.scanner = scanner
         self.trustStore = trustStore
-        self.diagnostics = DiagnosticsManager(trustStore: trustStore)
+        self.logger = FileLogger()
+        self.settingsStore = FileSettingsStore()
+        self.launchAtLoginManager = SMAppServiceLaunchAtLoginManager()
+
+        let settings = settingsStore.currentSettings
+        let config = ProximityEngineConfig(
+            nearGateRSSI: settings.nearGateRSSI,
+            farGateRSSI: settings.farGateRSSI,
+            farDwellDuration: settings.farDwellDuration,
+            countdownDuration: settings.countdownDuration
+        )
+
+        let proximityEngine = ProximityEngine(config: config)
+        let adapter = MacOSActionAdapter(isDryRun: true)
+        let policyEngine = PolicyEngine(
+            actionProvider: adapter,
+            isAutoLockEnabled: settings.isAutoLockEnabled,
+            isAutoWakeEnabled: settings.isAutoWakeEnabled
+        )
+
+        self.diagnostics = DiagnosticsManager(
+            trustStore: trustStore,
+            proximityEngine: proximityEngine,
+            policyEngine: policyEngine
+        )
         self.scanner.delegate = diagnostics
+
+        self.recoveryCoordinator = BluetoothRecoveryCoordinator(
+            scanner: scanner,
+            proximityEngine: proximityEngine
+        )
+        self.sleepWakeMonitor = SystemSleepWakeMonitor()
+
+        setupLifecycleObservers()
+    }
+
+    private func setupLifecycleObservers() {
+        diagnostics.onEventLogged = { [weak self] event in
+            self?.logger.log(event: event)
+        }
+
+        sleepWakeMonitor.onWillSleep = { [weak self] in
+            self?.diagnostics.log(category: "System.Power", message: "System entering sleep. Cancelling countdown and pausing scanner.")
+            self?.recoveryCoordinator.handleSystemSleep()
+        }
+
+        sleepWakeMonitor.onDidWake = { [weak self] in
+            self?.diagnostics.log(category: "System.Power", message: "System awakened. Resetting proximity filter and resuming scanner.")
+            self?.recoveryCoordinator.handleSystemWake()
+        }
+
+        sleepWakeMonitor.startMonitoring()
     }
 
     func run() {
@@ -38,6 +95,16 @@ final class AuraSenseCLI: @unchecked Sendable {
 
         if args.contains("candidate") {
             handleShowCandidate(asJSON: args.contains("--json"))
+            return
+        }
+
+        if args.contains("logs") {
+            handleLogs()
+            return
+        }
+
+        if args.contains("settings") {
+            handleSettings(args: args)
             return
         }
 
@@ -82,6 +149,11 @@ final class AuraSenseCLI: @unchecked Sendable {
             return
         }
 
+        if args.contains("menu") || args.contains("--menu") || (args.count == 1 && Bundle.main.bundlePath.hasSuffix(".app")) {
+            runMenuBarMode()
+            return
+        }
+
         runAgentMode()
     }
 
@@ -94,11 +166,14 @@ final class AuraSenseCLI: @unchecked Sendable {
 
         COMMANDS:
             agent (default)        Run continuous BLE discovery and live diagnostics monitoring
+            menu                   Launch the native macOS Menu Bar status item application
             scan                   Scan for nearby BLE peripherals for a set duration and report
             diagnostics            Inspect Bluetooth radio state, authorization, and capabilities
             candidate              Show currently registered candidate device and security disclaimers
             register <UUID>        Register a discovered BLE peripheral as the trusted candidate
             unregister             Unregister the current candidate device
+            settings               Inspect or modify persisted application settings
+            logs                   View recent persistent diagnostic log entries
 
         OPTIONS:
             --name <name>          Optional friendly name for registration (e.g. "Sathwik's iPhone")
@@ -154,7 +229,7 @@ final class AuraSenseCLI: @unchecked Sendable {
         do {
             try trustStore.unregister()
             diagnostics.gate.syncCandidate()
-            print("Candidate device unregistered successfully. Security gate is now closed to all devices.")
+            print("Candidate device cleared. Security gate is now blocking all peripherals.")
         } catch {
             print("Failed to unregister candidate: \(error.localizedDescription)")
         }
@@ -165,8 +240,7 @@ final class AuraSenseCLI: @unchecked Sendable {
             if asJSON {
                 print("{\"registered\": false}")
             } else {
-                print("No candidate device is currently registered.")
-                print("Use 'aurasense scan' to discover devices, then 'aurasense register <UUID>' to register.")
+                print("No candidate device currently registered. Run 'aurasense register <UUID>' to enroll one.")
             }
             return
         }
@@ -179,16 +253,51 @@ final class AuraSenseCLI: @unchecked Sendable {
                 print(str)
             }
         } else {
-            print("================================================================================")
-            print(" Registered Candidate Companion Device")
-            print("================================================================================")
-            print(" Identifier:           \(candidate.id.uuidString)")
-            print(" Name:                 \(candidate.name)")
-            print(" Enrolled At:          \(candidate.selectedAt)")
-            print(" Cryptographic Proof:  NONE (Local unverified peer; public BLE is not authenticated)")
-            print(" Security Disclaimer:  \(candidate.securityDisclaimer)")
-            print("================================================================================")
+            print("Registered Candidate Device:")
+            print("  Identifier:                 \(candidate.id.uuidString)")
+            print("  Name:                       \(candidate.name)")
+            print("  Enrolled Date:              \(candidate.selectedAt)")
+            print("  Cryptographically Verified: \(candidate.isCryptographicallyVerified)")
+            print("  Security Disclaimer:        \(candidate.securityDisclaimer)")
         }
+    }
+
+    private func handleLogs() {
+        let lines = logger.readRecentLogs(maxLines: 40)
+        if lines.isEmpty {
+            print("No log entries recorded yet in \(logger.logFileURL.path).")
+        } else {
+            print("Recent AuraSense Diagnostic Logs (\(logger.logFileURL.path)):")
+            print("--------------------------------------------------------------------------------")
+            for line in lines {
+                print(line)
+            }
+        }
+    }
+
+    private func handleSettings(args: [String]) {
+        var settings = settingsStore.currentSettings
+
+        if let lockIdx = args.firstIndex(of: "--auto-lock"), lockIdx + 1 < args.count {
+            settings.isAutoLockEnabled = (args[lockIdx + 1].lowercased() == "true")
+            try? settingsStore.save(settings: settings)
+            print("Updated autoLockEnabled: \(settings.isAutoLockEnabled)")
+        }
+
+        if let wakeIdx = args.firstIndex(of: "--auto-wake"), wakeIdx + 1 < args.count {
+            settings.isAutoWakeEnabled = (args[wakeIdx + 1].lowercased() == "true")
+            try? settingsStore.save(settings: settings)
+            print("Updated autoWakeEnabled: \(settings.isAutoWakeEnabled)")
+        }
+
+        print("Current AuraSense Settings:")
+        print("  Auto-Lock Enabled:       \(settings.isAutoLockEnabled)")
+        print("  Auto-Wake Enabled:       \(settings.isAutoWakeEnabled)")
+        print("  Launch at Login:         \(launchAtLoginManager.isEnabled)")
+        print("  Near Gate RSSI:          \(settings.nearGateRSSI) dBm")
+        print("  Far Gate RSSI:           \(settings.farGateRSSI) dBm")
+        print("  Far Dwell Duration:      \(settings.farDwellDuration) s")
+        print("  Departure Countdown:     \(settings.countdownDuration) s")
     }
 
     private func runDiagnostics(asJSON: Bool) {
@@ -235,6 +344,30 @@ final class AuraSenseCLI: @unchecked Sendable {
         }
     }
 
+    private func runMenuBarMode() {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+
+        let menuBarController = MenuBarController(
+            diagnostics: diagnostics,
+            settingsStore: settingsStore,
+            launchAtLoginManager: launchAtLoginManager
+        )
+
+        do {
+            try scanner.startScanning(serviceUUIDs: nil)
+        } catch {
+            diagnostics.log(level: .warning, category: "BLE", message: "Deferred scan start: \(error.localizedDescription)")
+        }
+
+        _ = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            self?.diagnostics.proximityEngine.tick()
+        }
+
+        _ = menuBarController // Retain controller
+        app.run()
+    }
+
     private func runAgentMode() {
         print(ConsoleDiagnosticsView.renderLiveHeader())
         print("Starting AuraSense background agent...")
@@ -247,7 +380,8 @@ final class AuraSenseCLI: @unchecked Sendable {
 
         setupSignalHandlers()
 
-        diagnostics.onEventLogged = { event in
+        diagnostics.onEventLogged = { [weak self] event in
+            self?.logger.log(event: event)
             if event.level != .debug {
                 print(event.logLine)
             }
@@ -308,5 +442,7 @@ final class AuraSenseCLI: @unchecked Sendable {
     }
 }
 
-let cli = AuraSenseCLI()
-cli.run()
+MainActor.assumeIsolated {
+    let cli = AuraSenseCLI()
+    cli.run()
+}

@@ -28,6 +28,10 @@ public enum AuthorizationStatus: String, Sendable, Codable, CustomStringConverti
     public var isAuthorized: Bool {
         self == .allowedAlways
     }
+
+    public var canScan: Bool {
+        isAuthorized
+    }
 }
 
 /// A timestamped RSSI observation.

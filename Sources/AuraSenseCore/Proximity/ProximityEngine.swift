@@ -163,6 +163,15 @@ public final class ProximityEngine: @unchecked Sendable {
         transitionUnderLock(to: .near(smoothedRSSI: rssi), reason: "User confirmed presence during countdown")
     }
 
+    /// Cancels any active departure countdown and transitions to UNKNOWN due to system interruptions.
+    public func cancelActiveCountdown(reason: String) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        cancelCountdownUnderLock(reason: reason)
+        transitionUnderLock(to: .unknown(reason: reason), reason: reason)
+    }
+
     // MARK: - Internal State Evaluation Logic
 
     private func evaluateSignalUnderLock(rawRSSI: Int, smoothedRSSI: Double, timestamp: Date) {
