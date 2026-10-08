@@ -194,6 +194,7 @@ final class AuraSenseCLI: @unchecked Sendable {
         let deadline = Date().addingTimeInterval(duration)
         while Date() < deadline {
             runLoop.run(until: Date(timeIntervalSinceNow: 0.1))
+            diagnostics.proximityEngine.tick()
         }
 
         scanner.stopScanning()
@@ -233,7 +234,11 @@ final class AuraSenseCLI: @unchecked Sendable {
 
         isRunning = true
 
-        let timer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+        let tickTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            self?.diagnostics.proximityEngine.tick()
+        }
+
+        let heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             let snapshot = self.diagnostics.snapshot(from: self.scanner)
             print("\n[Telemetry Heartbeat]")
@@ -241,10 +246,11 @@ final class AuraSenseCLI: @unchecked Sendable {
         }
 
         while isRunning {
-            runLoop.run(until: Date(timeIntervalSinceNow: 1.0))
+            runLoop.run(until: Date(timeIntervalSinceNow: 0.5))
         }
 
-        timer.invalidate()
+        tickTimer.invalidate()
+        heartbeatTimer.invalidate()
         scanner.stopScanning()
         print("\nAuraSense agent stopped.")
     }

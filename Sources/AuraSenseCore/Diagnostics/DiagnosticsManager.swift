@@ -7,6 +7,8 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
     public let authorizationStatus: AuthorizationStatus
     public let isScanning: Bool
     public let candidate: CandidateDevice?
+    public let proximityState: ProximityState
+    public let smoothedRSSI: Double?
     public let totalDiscoveredCount: Int
     public let activeCount: Int
     public let staleCount: Int
@@ -23,6 +25,8 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
         authorizationStatus: AuthorizationStatus,
         isScanning: Bool,
         candidate: CandidateDevice? = nil,
+        proximityState: ProximityState = .unknown(reason: "Uninitialized"),
+        smoothedRSSI: Double? = nil,
         gateAdmittedCount: Int = 0,
         gateBlockedCount: Int = 0,
         gateAmbiguityCount: Int = 0,
@@ -34,6 +38,8 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
         self.authorizationStatus = authorizationStatus
         self.isScanning = isScanning
         self.candidate = candidate
+        self.proximityState = proximityState
+        self.smoothedRSSI = smoothedRSSI
         self.gateAdmittedCount = gateAdmittedCount
         self.gateBlockedCount = gateBlockedCount
         self.gateAmbiguityCount = gateAmbiguityCount
@@ -53,7 +59,7 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
 
         var lines: [String] = []
         lines.append("================================================================================")
-        lines.append(" AuraSense BLE Discovery Diagnostics - \(timeString)")
+        lines.append(" AuraSense Proximity & BLE Diagnostics - \(timeString)")
         lines.append("================================================================================")
         lines.append(" Radio State:          \(radioState.rawValue)")
         lines.append(" Authorization:        \(authorizationStatus.rawValue)")
@@ -66,9 +72,12 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
             lines.append(" Selected Candidate:   None (No device candidate enrolled)")
         }
 
+        let smoothedStr = smoothedRSSI != nil ? String(format: "%.1f dBm", smoothedRSSI!) : "N/A"
+        lines.append(" Proximity State:      \(proximityState.displayLabel)")
+        lines.append(" Smoothed RSSI:        \(smoothedStr)")
         lines.append(" Security Gate Filter: Admitted: \(gateAdmittedCount) | Blocked: \(gateBlockedCount) | Ambiguities: \(gateAmbiguityCount)")
         lines.append(" Discovered Devices:   \(totalDiscoveredCount) (Active: \(activeCount), Stale: \(staleCount), Lost: \(lostCount))")
-        lines.append(" Security Action Lock: INACTIVE (Enforced Phase 2 constraint: No lock/unlock actions)")
+        lines.append(" Security Action Lock: INACTIVE (Enforced Phase 3 constraint: No lock/unlock actions)")
         lines.append("--------------------------------------------------------------------------------")
         let hID = Self.pad("Peripheral Identifier", length: 36)
         let hName = Self.pad("Device Name", length: 18)
@@ -126,6 +135,7 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
     public let trustStore: any CandidateTrustStoreProtocol
     public let classifier: AdvertisementClassifier
     public let gate: SecurityActionGate
+    public let proximityEngine: ProximityEngine
 
     public var onEventLogged: (@Sendable (DiagnosticEvent) -> Void)?
     public var onGateDecision: (@Sendable (GateDecision) -> Void)?
@@ -134,13 +144,33 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
         maxEvents: Int = 200,
         registry: PeripheralRegistry = PeripheralRegistry(),
         trustStore: any CandidateTrustStoreProtocol = InMemoryCandidateTrustStore(),
-        classifier: AdvertisementClassifier = AdvertisementClassifier()
+        classifier: AdvertisementClassifier = AdvertisementClassifier(),
+        proximityEngine: ProximityEngine = ProximityEngine()
     ) {
         self.maxEvents = maxEvents
         self.registry = registry
         self.trustStore = trustStore
         self.classifier = classifier
         self.gate = SecurityActionGate(trustStore: trustStore, classifier: classifier)
+        self.proximityEngine = proximityEngine
+
+        self.proximityEngine.updateCandidateAvailability(hasCandidate: trustStore.registeredCandidate != nil)
+
+        self.proximityEngine.onStateTransition = { [weak self] oldState, newState, reason in
+            self?.log(
+                level: .info,
+                category: "Proximity.FSM",
+                message: "Transition [\(oldState.displayLabel)] -> [\(newState.displayLabel)]: \(reason)"
+            )
+        }
+
+        self.proximityEngine.onCountdownTick = { [weak self] sec in
+            self?.log(
+                level: .warning,
+                category: "Proximity.Countdown",
+                message: "Departure countdown active: \(sec)s remaining"
+            )
+        }
     }
 
     /// Records a diagnostic event into the bounded ring buffer.
@@ -174,7 +204,7 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
         return events
     }
 
-    /// Creates an immutable diagnostic snapshot using current scanner and registry state.
+    /// Creates an immutable diagnostic snapshot using current scanner, registry, and proximity state.
     public func snapshot(from scanner: any BLEScannerProtocol) -> DiagnosticsSnapshot {
         let records = registry.diagnosticsRecords()
         let recent = recentEvents()
@@ -183,6 +213,8 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
             authorizationStatus: scanner.authorizationStatus,
             isScanning: scanner.isScanning,
             candidate: trustStore.registeredCandidate,
+            proximityState: proximityEngine.currentState,
+            smoothedRSSI: proximityEngine.filter.currentSmoothedRSSI,
             gateAdmittedCount: gate.admittedCount,
             gateBlockedCount: gate.blockedCount,
             gateAmbiguityCount: gate.ambiguityCount,
@@ -194,6 +226,7 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
     // MARK: - BLEScannerDelegate
 
     public func scannerDidChangeRadioState(_ state: RadioState) {
+        proximityEngine.updateScannerHealth(isHealthy: state.isAvailable, reason: "Radio state: \(state.rawValue)")
         log(
             level: state.isAvailable ? .info : .warning,
             category: "BLE.Radio",
@@ -216,9 +249,10 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
         ]
 
         switch decision {
-        case .admitted(let candidate, _, _):
+        case .admitted(let candidate, _, let rssi):
             meta["gate"] = "ADMITTED"
             meta["candidate"] = candidate.name
+            proximityEngine.processSample(rssi: rssi, timestamp: peripheral.lastSeen)
             log(
                 level: .info,
                 category: "BLE.Discovery",
@@ -235,6 +269,8 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
                 meta["reason"] = "Untrusted device"
             case .ambiguousCandidate(let count, let explanation):
                 meta["reason"] = "Ambiguous candidate (\(count) peers)"
+                // Enforce UNKNOWN on ambiguity per ARCHITECTURE.md
+                proximityEngine.updateScannerHealth(isHealthy: false, reason: "Identity ambiguity detected")
                 log(
                     level: .warning,
                     category: "Security.Gate",
@@ -258,6 +294,10 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
             let allActive = registry.allPeripherals()
             let decision = gate.evaluate(peripheral: peripheral, allActivePeripherals: allActive)
             onGateDecision?(decision)
+
+            if case .admitted = decision {
+                proximityEngine.processSample(rssi: rssi, timestamp: timestamp)
+            }
         }
 
         log(
@@ -269,6 +309,7 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
     }
 
     public func scannerDidEncounterError(_ error: Error) {
+        proximityEngine.updateScannerHealth(isHealthy: false, reason: error.localizedDescription)
         log(
             level: .error,
             category: "BLE.Error",

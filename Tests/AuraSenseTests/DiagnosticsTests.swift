@@ -49,7 +49,7 @@ struct DiagnosticsTests {
 
         let snapshot = diagnostics.snapshot(from: scanner)
         let report = snapshot.formattedReport
-        #expect(report.contains("AuraSense BLE Discovery Diagnostics"))
+        #expect(report.contains("AuraSense Proximity & BLE Diagnostics"))
         #expect(report.contains("Table Device"))
         #expect(report.contains("Security Action Lock: INACTIVE"))
     }
