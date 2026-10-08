@@ -13,6 +13,8 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
     public let locksExecutedCount: Int
     public let isAutoWakeEnabled: Bool
     public let wakesExecutedCount: Int
+    public let sessionState: SessionState
+    public let authPath: SupportedAuthenticationPath
     public let totalDiscoveredCount: Int
     public let activeCount: Int
     public let staleCount: Int
@@ -35,6 +37,8 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
         locksExecutedCount: Int = 0,
         isAutoWakeEnabled: Bool = true,
         wakesExecutedCount: Int = 0,
+        sessionState: SessionState = SessionState(),
+        authPath: SupportedAuthenticationPath = .nativeDisplayWakeBiometric,
         gateAdmittedCount: Int = 0,
         gateBlockedCount: Int = 0,
         gateAmbiguityCount: Int = 0,
@@ -52,6 +56,8 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
         self.locksExecutedCount = locksExecutedCount
         self.isAutoWakeEnabled = isAutoWakeEnabled
         self.wakesExecutedCount = wakesExecutedCount
+        self.sessionState = sessionState
+        self.authPath = authPath
         self.gateAdmittedCount = gateAdmittedCount
         self.gateBlockedCount = gateBlockedCount
         self.gateAmbiguityCount = gateAmbiguityCount
@@ -89,6 +95,9 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
         lines.append(" Smoothed RSSI:        \(smoothedStr)")
         lines.append(" Auto-Lock Policy:     \(isAutoLockEnabled ? "ENABLED" : "DISABLED") (Locks Executed: \(locksExecutedCount))")
         lines.append(" Auto-Wake Policy:     \(isAutoWakeEnabled ? "ENABLED" : "DISABLED") (Wakes Executed: \(wakesExecutedCount))")
+        lines.append(" Session State:        Locked: \(sessionState.isScreenLocked ? "YES" : "NO") | Console: \(sessionState.isOnConsole ? "YES" : "NO")")
+        lines.append(" Secure Auth Path:     \(authPath.rawValue)")
+        lines.append(" Credential Policy:    ZERO_PLAINTEXT (Plaintext password injection prohibited)")
         lines.append(" Security Gate Filter: Admitted: \(gateAdmittedCount) | Blocked: \(gateBlockedCount) | Ambiguities: \(gateAmbiguityCount)")
         lines.append(" Discovered Devices:   \(totalDiscoveredCount) (Active: \(activeCount), Stale: \(staleCount), Lost: \(lostCount))")
         lines.append("--------------------------------------------------------------------------------")
@@ -150,6 +159,7 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
     public let gate: SecurityActionGate
     public let proximityEngine: ProximityEngine
     public let policyEngine: PolicyEngine
+    public let authCoordinator: SecureAuthenticationCoordinator
 
     public var onEventLogged: (@Sendable (DiagnosticEvent) -> Void)?
     public var onGateDecision: (@Sendable (GateDecision) -> Void)?
@@ -160,7 +170,8 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
         trustStore: any CandidateTrustStoreProtocol = InMemoryCandidateTrustStore(),
         classifier: AdvertisementClassifier = AdvertisementClassifier(),
         proximityEngine: ProximityEngine = ProximityEngine(),
-        policyEngine: PolicyEngine? = nil
+        policyEngine: PolicyEngine? = nil,
+        authCoordinator: SecureAuthenticationCoordinator? = nil
     ) {
         self.maxEvents = maxEvents
         self.registry = registry
@@ -169,6 +180,7 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
         self.gate = SecurityActionGate(trustStore: trustStore, classifier: classifier)
         self.proximityEngine = proximityEngine
         self.policyEngine = policyEngine ?? PolicyEngine(actionProvider: MacOSActionAdapter(isDryRun: true))
+        self.authCoordinator = authCoordinator ?? SecureAuthenticationCoordinator()
 
         self.proximityEngine.updateCandidateAvailability(hasCandidate: trustStore.registeredCandidate != nil)
 
@@ -246,6 +258,8 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
             locksExecutedCount: policyEngine.locksExecutedCount,
             isAutoWakeEnabled: policyEngine.isAutoWakeEnabled,
             wakesExecutedCount: policyEngine.wakesExecutedCount,
+            sessionState: authCoordinator.detector.currentSessionState(),
+            authPath: authCoordinator.evaluateUnlockPath(),
             gateAdmittedCount: gate.admittedCount,
             gateBlockedCount: gate.blockedCount,
             gateAmbiguityCount: gate.ambiguityCount,
