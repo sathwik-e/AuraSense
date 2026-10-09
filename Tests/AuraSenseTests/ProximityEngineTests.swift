@@ -9,6 +9,38 @@ struct ProximityEngineTests {
         #expect(engine.currentState.isUnknown)
     }
 
+    @Test func testLiveConfigurationChangeCancelsPendingDepartureAndResetsEvidence() {
+        let engine = ProximityEngine(config: ProximityEngineConfig(nearDwellDuration: 0.1, farDwellDuration: 1))
+        engine.updateScannerHealth(isHealthy: true)
+        engine.updateCandidateAvailability(hasCandidate: true)
+        let start = Date()
+        engine.processSample(rssi: -50, timestamp: start)
+        engine.processSample(rssi: -50, timestamp: start.addingTimeInterval(0.2))
+        #expect(engine.currentState.isNear)
+        engine.processSample(rssi: -90, timestamp: start.addingTimeInterval(1))
+        engine.processSample(rssi: -90, timestamp: start.addingTimeInterval(2.2))
+        engine.tick(currentTime: start.addingTimeInterval(2.2))
+        #expect(engine.currentState.isCountdown)
+
+        var changed = engine.config
+        changed.farDwellDuration = 8
+        changed.staleTimeout = 30
+        changed.maxGapDuration = 30
+        #expect(engine.updateConfiguration(changed))
+        #expect(engine.config == changed)
+        #expect(engine.currentState.isUnknown)
+        engine.tick(currentTime: start.addingTimeInterval(20))
+        #expect(engine.currentState.isUnknown)
+    }
+
+    @Test func testInvalidLiveConfigurationIsRejectedWithoutChangingEngine() {
+        let engine = ProximityEngine()
+        var changed = engine.config
+        changed.farGateRSSI = changed.nearGateRSSI + 1
+        #expect(!engine.updateConfiguration(changed))
+        #expect(engine.config == .default)
+    }
+
     @Test func testNearGateTransitionWithDwell() {
         let config = ProximityEngineConfig(
             nearGateRSSI: -60.0,

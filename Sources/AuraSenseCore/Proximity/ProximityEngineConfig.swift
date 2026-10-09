@@ -54,4 +54,18 @@ public struct ProximityEngineConfig: Sendable, Codable, Equatable {
 
     /// Default production configuration.
     public static let `default` = ProximityEngineConfig()
+
+    public var isValid: Bool {
+        nearGateRSSI.isFinite && farGateRSSI.isFinite &&
+        nearGateRSSI <= -40 && nearGateRSSI >= -85 &&
+        farGateRSSI <= -45 && farGateRSSI >= -120 &&
+        nearGateRSSI - farGateRSSI >= 3 &&
+        nearDwellDuration.isFinite && (0...120).contains(nearDwellDuration) &&
+        farDwellDuration.isFinite && (1...120).contains(farDwellDuration) &&
+        (3...30).contains(countdownDuration) &&
+        staleTimeout.isFinite && (5...300).contains(staleTimeout) &&
+        medianWindowSize >= 1 && medianWindowSize <= 31 &&
+        ewmaAlpha.isFinite && (0...1).contains(ewmaAlpha) &&
+        maxGapDuration.isFinite && maxGapDuration >= staleTimeout
+    }
 }

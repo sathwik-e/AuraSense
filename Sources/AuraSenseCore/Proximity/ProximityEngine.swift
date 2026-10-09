@@ -5,8 +5,14 @@ import Foundation
 /// Guarantees callbacks execute strictly outside locks and enforces robust absence/dwell boundaries.
 public final class ProximityEngine: @unchecked Sendable {
     private let lock = NSLock()
-    public let config: ProximityEngineConfig
+    private var _config: ProximityEngineConfig
     public let filter: RSSIFilter
+
+    public var config: ProximityEngineConfig {
+        lock.lock()
+        defer { lock.unlock() }
+        return _config
+    }
 
     // State
     private var _state: ProximityState = .unknown(reason: "System initializing")
@@ -43,8 +49,31 @@ public final class ProximityEngine: @unchecked Sendable {
     }
 
     public init(config: ProximityEngineConfig = .default) {
-        self.config = config
+        self._config = config
         self.filter = RSSIFilter(config: config)
+    }
+
+    @discardableResult
+    public func updateConfiguration(_ configuration: ProximityEngineConfig) -> Bool {
+        guard configuration.isValid else { return false }
+        lock.lock()
+        guard configuration != _config else {
+            lock.unlock()
+            return true
+        }
+        _config = configuration
+        cancelCountdownUnderLock(reason: "Proximity settings changed")
+        filter.reset()
+        resetObservationTimingUnderLock()
+        var callbacks: [() -> Void] = []
+        transitionUnderLock(
+            to: .unknown(reason: "Proximity settings changed; waiting for fresh signal"),
+            reason: "Proximity settings changed",
+            callbacks: &callbacks
+        )
+        lock.unlock()
+        callbacks.forEach { $0() }
+        return true
     }
 
     // MARK: - Health and Lifecycle
@@ -142,7 +171,7 @@ public final class ProximityEngine: @unchecked Sendable {
         if case .countdown(let currentSec) = _state {
             if let start = countdownStartTime {
                 let elapsed = currentTime.timeIntervalSince(start)
-                let remaining = max(0, config.countdownDuration - Int(elapsed))
+                let remaining = max(0, _config.countdownDuration - Int(elapsed))
 
                 if remaining != lastCountdownSecondEmitted {
                     lastCountdownSecondEmitted = remaining
@@ -156,7 +185,7 @@ public final class ProximityEngine: @unchecked Sendable {
                     countdownStartTime = nil
                     lastCountdownSecondEmitted = nil
                     transitionUnderLock(
-                        to: .far(dwellDuration: config.farDwellDuration + Double(config.countdownDuration)),
+                        to: .far(dwellDuration: _config.farDwellDuration + Double(_config.countdownDuration)),
                         reason: "Departure countdown elapsed (5s) with sustained absence",
                         callbacks: &callbacks
                     )
@@ -176,7 +205,7 @@ public final class ProximityEngine: @unchecked Sendable {
         if let lastSample = lastAdmittedSampleTime {
             let silenceDuration = currentTime.timeIntervalSince(lastSample)
 
-            if silenceDuration >= config.staleTimeout {
+            if silenceDuration >= _config.staleTimeout {
                 // Extended silence: initiate departure countdown if currently NEAR
                 if _state.isNear {
                     initiateCountdownUnderLock(
@@ -200,7 +229,7 @@ public final class ProximityEngine: @unchecked Sendable {
         }
 
         // 3. Clear unconfirmed single far dwell if sample gap exceeds maxGapDuration
-        if let lastSample = lastAdmittedSampleTime, currentTime.timeIntervalSince(lastSample) > config.maxGapDuration {
+        if let lastSample = lastAdmittedSampleTime, currentTime.timeIntervalSince(lastSample) > _config.maxGapDuration {
             farDwellStartTime = nil
             farObservationCount = 0
         }
@@ -246,10 +275,10 @@ public final class ProximityEngine: @unchecked Sendable {
         timestamp: Date,
         callbacks: inout [() -> Void]
     ) {
-        let isRawNear = Double(rawRSSI) >= config.nearGateRSSI
-        let isSmoothedNear = smoothedRSSI >= config.nearGateRSSI
-        let isRawFar = Double(rawRSSI) <= config.farGateRSSI
-        let isSmoothedFar = smoothedRSSI <= config.farGateRSSI
+        let isRawNear = Double(rawRSSI) >= _config.nearGateRSSI
+        let isSmoothedNear = smoothedRSSI >= _config.nearGateRSSI
+        let isRawFar = Double(rawRSSI) <= _config.farGateRSSI
+        let isSmoothedFar = smoothedRSSI <= _config.farGateRSSI
 
         // 1. If currently in COUNTDOWN:
         if _state.isCountdown {
@@ -276,10 +305,10 @@ public final class ProximityEngine: @unchecked Sendable {
                 if let start = farDwellStartTime {
                     farObservationCount += 1
                     // Require multiple valid far observations across dwell window
-                    if farObservationCount >= 2 && timestamp.timeIntervalSince(start) >= config.farDwellDuration {
+                    if farObservationCount >= 2 && timestamp.timeIntervalSince(start) >= _config.farDwellDuration {
                         initiateCountdownUnderLock(
                             timestamp: timestamp,
-                            reason: "Departure dwell met with \(farObservationCount) far readings over \(config.farDwellDuration)s",
+                            reason: "Departure dwell met with \(farObservationCount) far readings over \(_config.farDwellDuration)s",
                             callbacks: &callbacks
                         )
                     }
@@ -300,10 +329,10 @@ public final class ProximityEngine: @unchecked Sendable {
                 _state = .near(smoothedRSSI: smoothedRSSI)
             } else {
                 if let start = nearDwellStartTime {
-                    if timestamp.timeIntervalSince(start) >= config.nearDwellDuration {
+                    if timestamp.timeIntervalSince(start) >= _config.nearDwellDuration {
                         transitionUnderLock(
                             to: .near(smoothedRSSI: smoothedRSSI),
-                            reason: "Signal sustained above near gate (\(config.nearGateRSSI) dBm) for \(config.nearDwellDuration)s",
+                            reason: "Signal sustained above near gate (\(_config.nearGateRSSI) dBm) for \(_config.nearDwellDuration)s",
                             callbacks: &callbacks
                         )
                     }
@@ -329,8 +358,8 @@ public final class ProximityEngine: @unchecked Sendable {
     ) {
         guard isScannerHealthy, hasCandidate, _state.isNear else { return }
         countdownStartTime = timestamp
-        lastCountdownSecondEmitted = config.countdownDuration
-        let initialSeconds = config.countdownDuration
+        lastCountdownSecondEmitted = _config.countdownDuration
+        let initialSeconds = _config.countdownDuration
         transitionUnderLock(
             to: .countdown(secondsRemaining: initialSeconds),
             reason: reason,

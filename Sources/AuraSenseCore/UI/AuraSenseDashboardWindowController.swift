@@ -16,6 +16,11 @@ final class AuraSenseDashboardWindowController: NSWindowController, NSWindowDele
     private let lockToggle = NSButton(checkboxWithTitle: "Lock this Mac when my iPhone leaves", target: nil, action: nil)
     private let wakeToggle = NSButton(checkboxWithTitle: "Wake the display when my iPhone returns", target: nil, action: nil)
     private let launchToggle = NSButton(checkboxWithTitle: "Open AuraSense at login", target: nil, action: nil)
+    private let nearThresholdSlider = NSSlider(value: -60, minValue: -85, maxValue: -40, target: nil, action: nil)
+    private let farThresholdSlider = NSSlider(value: -75, minValue: -100, maxValue: -45, target: nil, action: nil)
+    private let farDwellSlider = NSSlider(value: 10, minValue: 1, maxValue: 30, target: nil, action: nil)
+    private let countdownSlider = NSSlider(value: 5, minValue: 3, maxValue: 30, target: nil, action: nil)
+    private let signalLossSlider = NSSlider(value: 15, minValue: 5, maxValue: 120, target: nil, action: nil)
     private let peripheralStack = NSStackView()
     private let warningLabel = NSTextField(wrappingLabelWithString: "Bluetooth signal is an estimate, not proof of identity or distance. AuraSense can lock the screen; it cannot unlock a macOS session.")
     private var refreshTimer: Timer?
@@ -85,6 +90,12 @@ final class AuraSenseDashboardWindowController: NSWindowController, NSWindowDele
         lockToggle.isEnabled = snapshot.candidate != nil && diagnostics.policyEngine.actionProvider.isLockSupported
         wakeToggle.state = settings.isAutoWakeEnabled ? .on : .off
         launchToggle.state = launchAtLoginManager.isEnabled ? .on : .off
+        nearThresholdSlider.doubleValue = settings.nearGateRSSI
+        farThresholdSlider.doubleValue = settings.farGateRSSI
+        farDwellSlider.doubleValue = settings.farDwellDuration
+        countdownSlider.doubleValue = Double(settings.countdownDuration)
+        signalLossSlider.doubleValue = settings.signalLossTimeout
+        updateSliderValueLabels(settings: settings)
         updatePeripherals(snapshot.peripherals, selected: snapshot.candidate?.id)
     }
 
@@ -156,9 +167,30 @@ final class AuraSenseDashboardWindowController: NSWindowController, NSWindowDele
             toggle.target = self
             toggle.action = #selector(settingChanged(_:))
         }
+        let proximitySliders: [(NSSlider, Int)] = [
+            (nearThresholdSlider, 1),
+            (farThresholdSlider, 2),
+            (farDwellSlider, 3),
+            (countdownSlider, 4),
+            (signalLossSlider, 5)
+        ]
+        for (slider, tag) in proximitySliders {
+            slider.target = self
+            slider.action = #selector(proximitySettingChanged(_:))
+            slider.tag = tag
+            slider.isContinuous = false
+        }
+        let thresholdRows = [
+            settingRow("Near gate", value: "", slider: nearThresholdSlider, id: 1),
+            settingRow("Far gate", value: "", slider: farThresholdSlider, id: 2),
+            settingRow("Departure dwell", value: "", slider: farDwellSlider, id: 3),
+            settingRow("Lock countdown", value: "", slider: countdownSlider, id: 4),
+            settingRow("Signal-loss timeout", value: "", slider: signalLossSlider, id: 5)
+        ]
         warningLabel.font = .systemFont(ofSize: 11)
         warningLabel.textColor = .secondaryLabelColor
-        let preferences = card(title: "AUTOMATION", symbol: "slider.horizontal.3", content: [lockToggle, wakeToggle, launchToggle, warningLabel])
+        warningLabel.stringValue = "Near/far gates maintain hysteresis. Signal loss waits its own timeout; settings changes reset proximity evidence. BLE is not an authentication factor, and AuraSense cannot unlock a macOS session."
+        let preferences = card(title: "AUTOMATION & PROXIMITY", symbol: "slider.horizontal.3", content: [lockToggle, wakeToggle, launchToggle] + thresholdRows + [warningLabel])
         stack.addArrangedSubview(preferences)
 
         peripheralStack.orientation = .vertical
@@ -218,6 +250,47 @@ final class AuraSenseDashboardWindowController: NSWindowController, NSWindowDele
         stack.alignment = .leading
         stack.spacing = spacing
         return stack
+    }
+
+    private func settingRow(_ title: String, value: String, slider: NSSlider, id: Int) -> NSView {
+        let name = NSTextField(labelWithString: title)
+        name.font = .systemFont(ofSize: 12)
+        let valueLabel = NSTextField(labelWithString: value)
+        valueLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        valueLabel.alignment = .right
+        valueLabel.identifier = NSUserInterfaceItemIdentifier("proximity-setting-\(id)")
+        let labels = NSStackView(views: [name, valueLabel])
+        labels.orientation = .horizontal
+        labels.distribution = .fill
+        labels.widthAnchor.constraint(equalToConstant: 560).isActive = true
+        valueLabel.widthAnchor.constraint(equalToConstant: 72).isActive = true
+        let row = verticalStack([labels, slider], spacing: 2)
+        slider.widthAnchor.constraint(equalToConstant: 560).isActive = true
+        return row
+    }
+
+    private func updateSliderValueLabels(settings: UserSettings) {
+        let values: [(Int, String)] = [
+            (1, "\(Int(settings.nearGateRSSI)) dBm"),
+            (2, "\(Int(settings.farGateRSSI)) dBm"),
+            (3, "\(Int(settings.farDwellDuration)) sec"),
+            (4, "\(settings.countdownDuration) sec"),
+            (5, "\(Int(settings.signalLossTimeout)) sec")
+        ]
+        for (id, value) in values {
+            if let label = findView(in: window?.contentView, identifier: "proximity-setting-\(id)") as? NSTextField {
+                label.stringValue = value
+            }
+        }
+    }
+
+    private func findView(in view: NSView?, identifier: String) -> NSView? {
+        guard let view else { return nil }
+        if view.identifier?.rawValue == identifier { return view }
+        for child in view.subviews {
+            if let found = findView(in: child, identifier: identifier) { return found }
+        }
+        return nil
     }
 
     private func updatePeripherals(_ records: [PeripheralDiagnosticsRecord], selected: UUID?) {
@@ -281,6 +354,62 @@ final class AuraSenseDashboardWindowController: NSWindowController, NSWindowDele
             refresh()
         } catch {
             NSSound.beep()
+            refresh()
+        }
+    }
+
+    @objc private func proximitySettingChanged(_ sender: NSSlider) {
+        let oldSettings = settingsStore.currentSettings
+        var settings = oldSettings
+        switch sender.tag {
+        case 1:
+            settings.nearGateRSSI = sender.doubleValue.rounded()
+            if settings.nearGateRSSI - settings.farGateRSSI < 3 {
+                settings.farGateRSSI = settings.nearGateRSSI - 3
+            }
+        case 2:
+            settings.farGateRSSI = max(sender.doubleValue.rounded(), -88)
+            if settings.nearGateRSSI - settings.farGateRSSI < 3 {
+                settings.nearGateRSSI = settings.farGateRSSI + 3
+            }
+        case 3:
+            settings.farDwellDuration = sender.doubleValue.rounded()
+        case 4:
+            settings.countdownDuration = Int(sender.doubleValue.rounded())
+        case 5:
+            settings.signalLossTimeout = sender.doubleValue.rounded()
+        default:
+            return
+        }
+
+        var configuration = diagnostics.proximityEngine.config
+        configuration.nearGateRSSI = settings.nearGateRSSI
+        configuration.farGateRSSI = settings.farGateRSSI
+        configuration.farDwellDuration = settings.farDwellDuration
+        configuration.countdownDuration = settings.countdownDuration
+        configuration.staleTimeout = settings.signalLossTimeout
+        configuration.maxGapDuration = max(15, settings.signalLossTimeout)
+        guard settings.hasValidProximitySettings, configuration.isValid,
+              diagnostics.proximityEngine.updateConfiguration(configuration) else {
+            refresh()
+            NSSound.beep()
+            return
+        }
+
+        do {
+            try settingsStore.save(settings: settings)
+            diagnostics.log(level: .info, category: "UI.Settings", message: "Updated live proximity configuration")
+            refresh()
+        } catch {
+            var previousConfiguration = configuration
+            previousConfiguration.nearGateRSSI = oldSettings.nearGateRSSI
+            previousConfiguration.farGateRSSI = oldSettings.farGateRSSI
+            previousConfiguration.farDwellDuration = oldSettings.farDwellDuration
+            previousConfiguration.countdownDuration = oldSettings.countdownDuration
+            previousConfiguration.staleTimeout = oldSettings.signalLossTimeout
+            previousConfiguration.maxGapDuration = max(15, oldSettings.signalLossTimeout)
+            _ = diagnostics.proximityEngine.updateConfiguration(previousConfiguration)
+            diagnostics.log(level: .error, category: "UI.Settings", message: "Could not save proximity configuration: \(error.localizedDescription)")
             refresh()
         }
     }

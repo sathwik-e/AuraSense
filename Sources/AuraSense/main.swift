@@ -32,7 +32,9 @@ final class AuraSenseCLI: @unchecked Sendable {
             nearGateRSSI: settings.nearGateRSSI,
             farGateRSSI: settings.farGateRSSI,
             farDwellDuration: settings.farDwellDuration,
-            countdownDuration: settings.countdownDuration
+            countdownDuration: settings.countdownDuration,
+            staleTimeout: settings.signalLossTimeout,
+            maxGapDuration: max(15, settings.signalLossTimeout)
         )
 
         let proximityEngine = ProximityEngine(config: config)
@@ -320,6 +322,7 @@ final class AuraSenseCLI: @unchecked Sendable {
         print("  Far Gate RSSI:           \(settings.farGateRSSI) dBm")
         print("  Far Dwell Duration:      \(settings.farDwellDuration) s")
         print("  Departure Countdown:     \(settings.countdownDuration) s")
+        print("  Signal-Loss Timeout:     \(settings.signalLossTimeout) s")
     }
 
     private func runDiagnostics(asJSON: Bool) {

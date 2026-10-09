@@ -13,6 +13,7 @@ struct SettingsTests {
         #expect(settings.farGateRSSI == -75.0)
         #expect(settings.farDwellDuration == 10.0)
         #expect(settings.countdownDuration == 5)
+        #expect(settings.signalLossTimeout == 15)
     }
 
     @Test func testInMemorySettingsStore() throws {
@@ -37,11 +38,33 @@ struct SettingsTests {
         var settings = store1.currentSettings
         settings.isAutoLockEnabled = true
         settings.nearGateRSSI = -55.0
+        settings.signalLossTimeout = 45
         try store1.save(settings: settings)
 
         // Reload in new store instance
         let store2 = FileSettingsStore(fileURL: tempURL)
         #expect(store2.currentSettings.isAutoLockEnabled)
         #expect(store2.currentSettings.nearGateRSSI == -55.0)
+        #expect(store2.currentSettings.signalLossTimeout == 45)
+    }
+
+    @Test func testLegacySettingsDecodeSignalLossTimeoutDefault() throws {
+        let legacy = Data("""
+        {"isAutoLockEnabled":true,"isAutoWakeEnabled":false,"isLaunchAtLoginEnabled":false,"nearGateRSSI":-58,"farGateRSSI":-76,"farDwellDuration":8,"countdownDuration":6}
+        """.utf8)
+        let settings = try JSONDecoder().decode(UserSettings.self, from: legacy)
+        #expect(settings.isAutoLockEnabled)
+        #expect(settings.signalLossTimeout == 15)
+        #expect(settings.hasValidProximitySettings)
+    }
+
+    @Test func testSettingsStoreRejectsInvalidThresholdOrdering() {
+        let store = InMemorySettingsStore()
+        var settings = store.currentSettings
+        settings.nearGateRSSI = -70
+        settings.farGateRSSI = -68
+        #expect(throws: SettingsStoreError.self) {
+            try store.save(settings: settings)
+        }
     }
 }
