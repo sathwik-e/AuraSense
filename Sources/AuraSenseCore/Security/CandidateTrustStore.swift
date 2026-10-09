@@ -1,7 +1,7 @@
 import Foundation
 
 /// Errors that may occur during candidate device registration or retrieval.
-public enum TrustStoreError: LocalizedError, Sendable {
+public enum TrustStoreError: LocalizedError, Sendable, Equatable {
     case persistenceFailed(String)
     case candidateNotFound
     case invalidCandidateData
@@ -21,9 +21,14 @@ public enum TrustStoreError: LocalizedError, Sendable {
 /// Abstract contract for managing trusted candidate device registration and persistence.
 public protocol CandidateTrustStoreProtocol: Sendable {
     var registeredCandidate: CandidateDevice? { get }
+    var lastLoadError: TrustStoreError? { get }
     func register(candidate: CandidateDevice) throws
     func unregister() throws
     func isRegistered(peripheralID: UUID) -> Bool
+}
+
+extension CandidateTrustStoreProtocol {
+    public var lastLoadError: TrustStoreError? { nil }
 }
 
 /// Thread-safe in-memory trust store primarily used for automated testing.
@@ -65,12 +70,20 @@ public final class PersistentCandidateTrustStore: CandidateTrustStoreProtocol, @
     private let lock = NSLock()
     private let storageURL: URL
     private var cachedCandidate: CandidateDevice?
+    private var _lastLoadError: TrustStoreError?
+
+    public var lastLoadError: TrustStoreError? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _lastLoadError
+    }
 
     public init(storageURL: URL? = nil) {
         if let customURL = storageURL {
             self.storageURL = customURL
         } else {
-            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                ?? URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("Application Support", isDirectory: true)
             let aurasenseDir = appSupport.appendingPathComponent("AuraSense", isDirectory: true)
             try? FileManager.default.createDirectory(at: aurasenseDir, withIntermediateDirectories: true)
             self.storageURL = aurasenseDir.appendingPathComponent("trusted_candidate.json")
@@ -100,6 +113,7 @@ public final class PersistentCandidateTrustStore: CandidateTrustStoreProtocol, @
 
             try data.write(to: storageURL, options: .atomic)
             self.cachedCandidate = candidate
+            self._lastLoadError = nil
         } catch {
             throw TrustStoreError.persistenceFailed(error.localizedDescription)
         }
@@ -117,6 +131,7 @@ public final class PersistentCandidateTrustStore: CandidateTrustStoreProtocol, @
             }
         }
         self.cachedCandidate = nil
+        self._lastLoadError = nil
     }
 
     public func isRegistered(peripheralID: UUID) -> Bool {
@@ -125,14 +140,45 @@ public final class PersistentCandidateTrustStore: CandidateTrustStoreProtocol, @
         return cachedCandidate?.id == peripheralID
     }
 
+    /// Recovers a corrupt store by deleting the malformed file and resetting error state.
+    public func recoverCorruptStore() throws {
+        lock.lock()
+        defer { lock.unlock() }
+
+        if FileManager.default.fileExists(atPath: storageURL.path) {
+            do {
+                try FileManager.default.removeItem(at: storageURL)
+            } catch {
+                throw TrustStoreError.persistenceFailed("Failed to clear corrupt candidate file: \(error.localizedDescription)")
+            }
+        }
+        self.cachedCandidate = nil
+        self._lastLoadError = nil
+    }
+
     private func loadFromDisk() -> CandidateDevice? {
-        guard FileManager.default.fileExists(atPath: storageURL.path),
-              let data = try? Data(contentsOf: storageURL) else {
+        guard FileManager.default.fileExists(atPath: storageURL.path) else {
+            _lastLoadError = nil
+            return nil
+        }
+
+        let data: Data
+        do {
+            data = try Data(contentsOf: storageURL)
+        } catch {
+            _lastLoadError = .persistenceFailed("Unreadable candidate store: \(error.localizedDescription)")
             return nil
         }
 
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(CandidateDevice.self, from: data)
+        do {
+            let candidate = try decoder.decode(CandidateDevice.self, from: data)
+            _lastLoadError = nil
+            return candidate
+        } catch {
+            _lastLoadError = .invalidCandidateData
+            return nil
+        }
     }
 }

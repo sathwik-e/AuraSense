@@ -2,6 +2,7 @@ import Foundation
 
 /// Core proximity engine implementing the state machine, signal filtering,
 /// dual-gate hysteresis, dwell debouncing, and cancellable 5-second countdown.
+/// Guarantees callbacks execute strictly outside locks and enforces robust absence/dwell boundaries.
 public final class ProximityEngine: @unchecked Sendable {
     private let lock = NSLock()
     public let config: ProximityEngineConfig
@@ -12,10 +13,11 @@ public final class ProximityEngine: @unchecked Sendable {
     private var isScannerHealthy: Bool = false
     private var hasCandidate: Bool = false
 
-    // Timing tracking
+    // Timing & observation tracking
     private var lastAdmittedSampleTime: Date?
     private var nearDwellStartTime: Date?
     private var farDwellStartTime: Date?
+    private var farObservationCount: Int = 0
     private var countdownStartTime: Date?
     private var lastCountdownSecondEmitted: Int?
 
@@ -30,6 +32,10 @@ public final class ProximityEngine: @unchecked Sendable {
         return _state
     }
 
+    public static func isValidRSSI(_ rssi: Int) -> Bool {
+        return rssi >= -120 && rssi <= 0
+    }
+
     public init(config: ProximityEngineConfig = .default) {
         self.config = config
         self.filter = RSSIFilter(config: config)
@@ -41,66 +47,87 @@ public final class ProximityEngine: @unchecked Sendable {
     /// If health is lost, immediately forces UNKNOWN and cancels any active countdown per ARCHITECTURE.md.
     public func updateScannerHealth(isHealthy: Bool, reason: String = "Scanner health changed") {
         lock.lock()
-        defer { lock.unlock() }
+        var callbacks: [() -> Void] = []
 
         self.isScannerHealthy = isHealthy
         if !isHealthy {
             cancelCountdownUnderLock(reason: "Monitoring unhealthy: \(reason)")
-            transitionUnderLock(to: .unknown(reason: reason), reason: reason)
+            transitionUnderLock(to: .unknown(reason: reason), reason: reason, callbacks: &callbacks)
             filter.reset()
             nearDwellStartTime = nil
             farDwellStartTime = nil
+            farObservationCount = 0
         }
+
+        lock.unlock()
+        for cb in callbacks { cb() }
     }
 
     /// Updates whether a valid candidate is configured.
     public func updateCandidateAvailability(hasCandidate: Bool) {
         lock.lock()
-        defer { lock.unlock() }
+        var callbacks: [() -> Void] = []
 
         self.hasCandidate = hasCandidate
         if !hasCandidate {
             cancelCountdownUnderLock(reason: "Candidate removed")
-            transitionUnderLock(to: .unknown(reason: "No candidate registered"), reason: "No candidate registered")
+            transitionUnderLock(to: .unknown(reason: "No candidate registered"), reason: "No candidate registered", callbacks: &callbacks)
             filter.reset()
+            nearDwellStartTime = nil
+            farDwellStartTime = nil
+            farObservationCount = 0
+            lastAdmittedSampleTime = nil
         }
+
+        lock.unlock()
+        for cb in callbacks { cb() }
     }
 
     // MARK: - Ingestion of Admitted Candidate Samples
 
     /// Ingests an admitted candidate BLE sample passed by the SecurityActionGate.
+    /// Strictly validates RSSI before updating liveness, sample freshness, or filters.
     public func processSample(rssi: Int, timestamp: Date = Date()) {
+        guard Self.isValidRSSI(rssi) else {
+            return
+        }
+
         lock.lock()
-        defer { lock.unlock() }
+        var callbacks: [() -> Void] = []
 
         guard isScannerHealthy, hasCandidate else {
+            lock.unlock()
             return
         }
 
         lastAdmittedSampleTime = timestamp
         guard let smoothed = filter.addSample(rssi: rssi, timestamp: timestamp) else {
+            lock.unlock()
             return
         }
 
-        evaluateSignalUnderLock(rawRSSI: rssi, smoothedRSSI: smoothed, timestamp: timestamp)
+        evaluateSignalUnderLock(rawRSSI: rssi, smoothedRSSI: smoothed, timestamp: timestamp, callbacks: &callbacks)
+        lock.unlock()
+
+        for cb in callbacks { cb() }
     }
 
     // MARK: - Periodic Tick Evaluation (for time progression & countdowns)
 
     /// Advances the engine's internal time evaluation.
-    /// Drives countdown progression, absence dwell, and stale detection.
+    /// Drives countdown progression and absence detection.
     public func tick(currentTime: Date = Date()) {
         lock.lock()
-        defer { lock.unlock() }
+        var callbacks: [() -> Void] = []
 
         guard isScannerHealthy, hasCandidate else {
             if !_state.isUnknown {
-                transitionUnderLock(to: .unknown(reason: "Monitoring unavailable"), reason: "Monitoring unavailable")
+                transitionUnderLock(to: .unknown(reason: "Monitoring unavailable"), reason: "Monitoring unavailable", callbacks: &callbacks)
             }
+            lock.unlock()
+            for cb in callbacks { cb() }
             return
         }
-
-        let smoothed = filter.currentSmoothedRSSI
 
         // 1. If currently in COUNTDOWN: manage countdown timer
         if case .countdown(let currentSec) = _state {
@@ -110,7 +137,9 @@ public final class ProximityEngine: @unchecked Sendable {
 
                 if remaining != lastCountdownSecondEmitted {
                     lastCountdownSecondEmitted = remaining
-                    onCountdownTick?(remaining)
+                    callbacks.append { [weak self] in
+                        self?.onCountdownTick?(remaining)
+                    }
                 }
 
                 if remaining <= 0 {
@@ -119,62 +148,95 @@ public final class ProximityEngine: @unchecked Sendable {
                     lastCountdownSecondEmitted = nil
                     transitionUnderLock(
                         to: .far(dwellDuration: config.farDwellDuration + Double(config.countdownDuration)),
-                        reason: "Departure countdown elapsed (5s) with sustained absence"
+                        reason: "Departure countdown elapsed (5s) with sustained absence",
+                        callbacks: &callbacks
                     )
+                    lock.unlock()
+                    for cb in callbacks { cb() }
                     return
                 } else if remaining != currentSec {
                     _state = .countdown(secondsRemaining: remaining)
                 }
             }
+            lock.unlock()
+            for cb in callbacks { cb() }
             return
         }
 
-        // 2. Check for stale evidence / missing candidate packets
+        // 2. Check for stale evidence / missing candidate packets (Absence Policy)
         if let lastSample = lastAdmittedSampleTime {
             let silenceDuration = currentTime.timeIntervalSince(lastSample)
 
             if silenceDuration >= config.staleTimeout {
-                // Extended silence: initiate departure countdown if currently NEAR or hold state
-                handleAbsenceUnderLock(silenceDuration: silenceDuration, timestamp: currentTime)
+                // Extended silence: initiate departure countdown if currently NEAR
+                if _state.isNear {
+                    initiateCountdownUnderLock(
+                        timestamp: currentTime,
+                        reason: "Departure countdown initiated: candidate absent for \(Int(silenceDuration))s (stale timeout exceeded)",
+                        callbacks: &callbacks
+                    )
+                }
+                lock.unlock()
+                for cb in callbacks { cb() }
                 return
             }
         } else {
             // No sample ever received yet
             if !_state.isUnknown {
-                transitionUnderLock(to: .unknown(reason: "Awaiting initial candidate evidence"), reason: "Startup")
+                transitionUnderLock(to: .unknown(reason: "Awaiting initial candidate evidence"), reason: "Startup", callbacks: &callbacks)
             }
+            lock.unlock()
+            for cb in callbacks { cb() }
             return
         }
 
-        // 3. Evaluate dwell progression for current smoothed signal
-        if let smoothed = smoothed {
-            evaluateDwellTimersUnderLock(smoothedRSSI: smoothed, timestamp: currentTime)
+        // 3. Clear unconfirmed single far dwell if sample gap exceeds maxGapDuration
+        if let lastSample = lastAdmittedSampleTime, currentTime.timeIntervalSince(lastSample) > config.maxGapDuration {
+            farDwellStartTime = nil
+            farObservationCount = 0
         }
+
+        lock.unlock()
+        for cb in callbacks { cb() }
     }
 
     /// Allows explicit cancellation of an active departure countdown (e.g. user clicks "I'm Here").
     public func userCancelCountdown() {
         lock.lock()
-        defer { lock.unlock() }
+        var callbacks: [() -> Void] = []
 
-        guard _state.isCountdown else { return }
+        guard _state.isCountdown else {
+            lock.unlock()
+            return
+        }
         cancelCountdownUnderLock(reason: "User cancelled countdown")
         let rssi = filter.currentSmoothedRSSI ?? -65.0
-        transitionUnderLock(to: .near(smoothedRSSI: rssi), reason: "User confirmed presence during countdown")
+        transitionUnderLock(to: .near(smoothedRSSI: rssi), reason: "User confirmed presence during countdown", callbacks: &callbacks)
+
+        lock.unlock()
+        for cb in callbacks { cb() }
     }
 
     /// Cancels any active departure countdown and transitions to UNKNOWN due to system interruptions.
     public func cancelActiveCountdown(reason: String) {
         lock.lock()
-        defer { lock.unlock() }
+        var callbacks: [() -> Void] = []
 
         cancelCountdownUnderLock(reason: reason)
-        transitionUnderLock(to: .unknown(reason: reason), reason: reason)
+        transitionUnderLock(to: .unknown(reason: reason), reason: reason, callbacks: &callbacks)
+
+        lock.unlock()
+        for cb in callbacks { cb() }
     }
 
     // MARK: - Internal State Evaluation Logic
 
-    private func evaluateSignalUnderLock(rawRSSI: Int, smoothedRSSI: Double, timestamp: Date) {
+    private func evaluateSignalUnderLock(
+        rawRSSI: Int,
+        smoothedRSSI: Double,
+        timestamp: Date,
+        callbacks: inout [() -> Void]
+    ) {
         let isRawNear = Double(rawRSSI) >= config.nearGateRSSI
         let isSmoothedNear = smoothedRSSI >= config.nearGateRSSI
         let isRawFar = Double(rawRSSI) <= config.farGateRSSI
@@ -185,25 +247,36 @@ public final class ProximityEngine: @unchecked Sendable {
             if isRawNear || isSmoothedNear {
                 // Immediate cancellation on near return
                 cancelCountdownUnderLock(reason: "Candidate returned above near gate (\(rawRSSI) dBm)")
-                transitionUnderLock(to: .near(smoothedRSSI: smoothedRSSI), reason: "Candidate returned during countdown")
+                transitionUnderLock(
+                    to: .near(smoothedRSSI: smoothedRSSI),
+                    reason: "Candidate returned during countdown",
+                    callbacks: &callbacks
+                )
                 nearDwellStartTime = timestamp
                 farDwellStartTime = nil
+                farObservationCount = 0
                 return
             }
         }
 
-        // 2. Evaluate FAR departure condition (raw is far OR smoothed is far):
+        // 2. Evaluate FAR departure condition:
         if isRawFar || isSmoothedFar {
             nearDwellStartTime = nil // Reset near dwell
 
             if _state.isNear {
-                // Begin or advance departure dwell (debounce)
                 if let start = farDwellStartTime {
-                    if timestamp.timeIntervalSince(start) >= config.farDwellDuration {
-                        initiateCountdownUnderLock(timestamp: timestamp)
+                    farObservationCount += 1
+                    // Require multiple valid far observations across dwell window
+                    if farObservationCount >= 2 && timestamp.timeIntervalSince(start) >= config.farDwellDuration {
+                        initiateCountdownUnderLock(
+                            timestamp: timestamp,
+                            reason: "Departure dwell met with \(farObservationCount) far readings over \(config.farDwellDuration)s",
+                            callbacks: &callbacks
+                        )
                     }
                 } else {
                     farDwellStartTime = timestamp
+                    farObservationCount = 1
                 }
             }
             return
@@ -211,7 +284,8 @@ public final class ProximityEngine: @unchecked Sendable {
 
         // 3. Evaluate NEAR condition:
         if isRawNear && isSmoothedNear {
-            farDwellStartTime = nil // Reset departure dwell (debounce)
+            farDwellStartTime = nil // Reset departure dwell
+            farObservationCount = 0
 
             if _state.isNear {
                 _state = .near(smoothedRSSI: smoothedRSSI)
@@ -220,7 +294,8 @@ public final class ProximityEngine: @unchecked Sendable {
                     if timestamp.timeIntervalSince(start) >= config.nearDwellDuration {
                         transitionUnderLock(
                             to: .near(smoothedRSSI: smoothedRSSI),
-                            reason: "Signal sustained above near gate (\(config.nearGateRSSI) dBm) for \(config.nearDwellDuration)s"
+                            reason: "Signal sustained above near gate (\(config.nearGateRSSI) dBm) for \(config.nearDwellDuration)s",
+                            callbacks: &callbacks
                         )
                     }
                 } else {
@@ -230,43 +305,40 @@ public final class ProximityEngine: @unchecked Sendable {
             return
         }
 
-        // 4. Hysteresis dead band (between -75 dBm and -60 dBm):
-        // Maintain current state to prevent flutter
+        // 4. Hysteresis dead band (between farGateRSSI and nearGateRSSI):
         nearDwellStartTime = nil
     }
 
-    private func handleAbsenceUnderLock(silenceDuration: TimeInterval, timestamp: Date) {
-        if _state.isNear {
-            initiateCountdownUnderLock(timestamp: timestamp)
-        }
-    }
-
-    private func evaluateDwellTimersUnderLock(smoothedRSSI: Double, timestamp: Date) {
-        if _state.isNear {
-            if let start = farDwellStartTime, timestamp.timeIntervalSince(start) >= config.farDwellDuration {
-                initiateCountdownUnderLock(timestamp: timestamp)
-            }
-        }
-    }
-
-    private func initiateCountdownUnderLock(timestamp: Date) {
+    private func initiateCountdownUnderLock(
+        timestamp: Date,
+        reason: String = "Departure dwell met; initiating 5-second cancellable countdown",
+        callbacks: inout [() -> Void]
+    ) {
         countdownStartTime = timestamp
         lastCountdownSecondEmitted = config.countdownDuration
         let initialSeconds = config.countdownDuration
         transitionUnderLock(
             to: .countdown(secondsRemaining: initialSeconds),
-            reason: "Departure dwell met; initiating 5-second cancellable countdown"
+            reason: reason,
+            callbacks: &callbacks
         )
-        onCountdownTick?(initialSeconds)
+        callbacks.append { [weak self] in
+            self?.onCountdownTick?(initialSeconds)
+        }
     }
 
     private func cancelCountdownUnderLock(reason: String) {
         countdownStartTime = nil
         lastCountdownSecondEmitted = nil
         farDwellStartTime = nil
+        farObservationCount = 0
     }
 
-    private func transitionUnderLock(to newState: ProximityState, reason: String) {
+    private func transitionUnderLock(
+        to newState: ProximityState,
+        reason: String,
+        callbacks: inout [() -> Void]
+    ) {
         guard _state != newState else { return }
         let oldState = _state
         _state = newState
@@ -281,8 +353,10 @@ public final class ProximityEngine: @unchecked Sendable {
             timestamp: Date()
         )
 
-        onStateTransition?(oldState, newState, reason)
-        onEvaluation?(eval)
+        callbacks.append { [weak self] in
+            self?.onStateTransition?(oldState, newState, reason)
+            self?.onEvaluation?(eval)
+        }
     }
 
     private func computeConfidence(state: ProximityState) -> Double {

@@ -14,8 +14,14 @@ public protocol ActionProviderProtocol: Sendable {
     /// Requests to lock the macOS screen.
     func requestLock() async throws -> ActionResult
 
+    /// Requests to lock the macOS screen with an in-flight validation hook before side effects.
+    func requestLock(isValid: (@Sendable () -> Bool)?) async throws -> ActionResult
+
     /// Requests to wake the display.
     func wakeDisplay() async throws -> ActionResult
+
+    /// Requests to wake the display with an in-flight validation hook before side effects.
+    func wakeDisplay(isValid: (@Sendable () -> Bool)?) async throws -> ActionResult
 
     /// Requests credential entry into the verified login window (opt-in only per ARCHITECTURE.md).
     func requestCredentialEntry() async throws -> ActionResult
@@ -28,6 +34,24 @@ public protocol ActionProviderProtocol: Sendable {
 
     /// Explicit no-op.
     func noOp() -> ActionResult
+}
+
+extension ActionProviderProtocol {
+    /// Overload allowing execution with an in-flight validation hook before side effects.
+    public func requestLock(isValid: (@Sendable () -> Bool)?) async throws -> ActionResult {
+        if let check = isValid, !check() {
+            return .rejected(.requestLock, reason: "Lock request invalidated before execution")
+        }
+        return try await requestLock()
+    }
+
+    /// Overload allowing execution with an in-flight validation hook before side effects.
+    public func wakeDisplay(isValid: (@Sendable () -> Bool)?) async throws -> ActionResult {
+        if let check = isValid, !check() {
+            return .rejected(.wakeDisplay, reason: "Display wake invalidated before execution")
+        }
+        return try await wakeDisplay()
+    }
 }
 
 /// Safe Action Provider for Phase 1 that guarantees no lock or unlock actions are performed.

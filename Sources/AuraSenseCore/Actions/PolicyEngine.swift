@@ -1,7 +1,7 @@
 import Foundation
 
 /// Action policy engine evaluating proximity transitions and executing authorized system actions.
-/// Strictly enforces opt-in, idempotency, and fail-safe gates per ARCHITECTURE.md.
+/// Strictly enforces opt-in, idempotency, serialized execution, and accurate telemetry per ARCHITECTURE.md.
 public final class PolicyEngine: @unchecked Sendable {
     private let lock = NSLock()
     public let actionProvider: any ActionProviderProtocol
@@ -18,11 +18,15 @@ public final class PolicyEngine: @unchecked Sendable {
     // Telemetry - Locks
     private var _lockAttemptsCount: Int = 0
     private var _locksExecutedCount: Int = 0
+    private var _locksRejectedCount: Int = 0
+    private var _locksUnsupportedCount: Int = 0
     private var _locksSuppressedCount: Int = 0
 
     // Telemetry - Wakes
     private var _wakeAttemptsCount: Int = 0
     private var _wakesExecutedCount: Int = 0
+    private var _wakesRejectedCount: Int = 0
+    private var _wakesUnsupportedCount: Int = 0
     private var _wakesSuppressedCount: Int = 0
 
     public var lockAttemptsCount: Int {
@@ -35,6 +39,18 @@ public final class PolicyEngine: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return _locksExecutedCount
+    }
+
+    public var locksRejectedCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _locksRejectedCount
+    }
+
+    public var locksUnsupportedCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _locksUnsupportedCount
     }
 
     public var locksSuppressedCount: Int {
@@ -53,6 +69,18 @@ public final class PolicyEngine: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return _wakesExecutedCount
+    }
+
+    public var wakesRejectedCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _wakesRejectedCount
+    }
+
+    public var wakesUnsupportedCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _wakesUnsupportedCount
     }
 
     public var wakesSuppressedCount: Int {
@@ -87,7 +115,9 @@ public final class PolicyEngine: @unchecked Sendable {
     public func handleStateTransition(
         from oldState: ProximityState,
         to newState: ProximityState,
-        reason: String
+        reason: String,
+        generation: Int64? = nil,
+        isValid: (@Sendable () -> Bool)? = nil
     ) async -> ActionResult? {
         let decision = evaluateTransitionSync(oldState: oldState, newState: newState)
 
@@ -97,29 +127,32 @@ public final class PolicyEngine: @unchecked Sendable {
 
         case .rejected(let action, let reasonText):
             let result = ActionResult.rejected(action, reason: reasonText)
+            recordActionOutcome(action: action, result: result)
             onPolicyDecision?(action, result)
             return result
 
         case .lock:
             do {
-                let result = try await actionProvider.requestLock()
-                recordLockSuccess()
+                let result = try await actionProvider.requestLock(isValid: isValid)
+                recordActionOutcome(action: .requestLock, result: result)
                 onPolicyDecision?(.requestLock, result)
                 return result
             } catch {
                 let result = ActionResult.rejected(.requestLock, reason: "Lock request execution failed: \(error.localizedDescription)")
+                recordActionOutcome(action: .requestLock, result: result)
                 onPolicyDecision?(.requestLock, result)
                 return result
             }
 
         case .wake:
             do {
-                let result = try await actionProvider.wakeDisplay()
-                recordWakeSuccess()
+                let result = try await actionProvider.wakeDisplay(isValid: isValid)
+                recordActionOutcome(action: .wakeDisplay, result: result)
                 onPolicyDecision?(.wakeDisplay, result)
                 return result
             } catch {
                 let result = ActionResult.rejected(.wakeDisplay, reason: "Display wake execution failed: \(error.localizedDescription)")
+                recordActionOutcome(action: .wakeDisplay, result: result)
                 onPolicyDecision?(.wakeDisplay, result)
                 return result
             }
@@ -138,12 +171,13 @@ public final class PolicyEngine: @unchecked Sendable {
             hasLockedForCurrentDeparture = false
 
             if !oldState.isNear && !hasWokenForCurrentArrival {
-                hasWokenForCurrentArrival = true
                 guard isAutoWakeEnabled else {
                     _wakesSuppressedCount += 1
                     return .rejected(.wakeDisplay, "Auto-wake is disabled by user policy")
                 }
                 _wakeAttemptsCount += 1
+                // Reserve latch BEFORE suspension to prevent concurrent admission race (Finding 15)
+                hasWokenForCurrentArrival = true
                 return .wake
             }
             return .none
@@ -163,8 +197,9 @@ public final class PolicyEngine: @unchecked Sendable {
                 return .rejected(.requestLock, "Lock request suppressed: already locked for this departure (idempotent)")
             }
 
-            hasLockedForCurrentDeparture = true
             _lockAttemptsCount += 1
+            // Reserve latch BEFORE suspension to prevent concurrent admission race (Finding 15)
+            hasLockedForCurrentDeparture = true
             return .lock
         }
 
@@ -173,8 +208,8 @@ public final class PolicyEngine: @unchecked Sendable {
             hasWokenForCurrentArrival = false
 
             if lockOnUnknown && isAutoLockEnabled && !hasLockedForCurrentDeparture {
-                hasLockedForCurrentDeparture = true
                 _lockAttemptsCount += 1
+                hasLockedForCurrentDeparture = true  // Reserve before suspension
                 return .lock
             }
             return .none
@@ -183,16 +218,40 @@ public final class PolicyEngine: @unchecked Sendable {
         return .none
     }
 
-    private func recordLockSuccess() {
+    private func recordActionOutcome(action: SecurityAction, result: ActionResult) {
         lock.lock()
         defer { lock.unlock() }
-        _locksExecutedCount += 1
-    }
 
-    private func recordWakeSuccess() {
-        lock.lock()
-        defer { lock.unlock() }
-        _wakesExecutedCount += 1
+        switch action {
+        case .requestLock:
+            switch result {
+            case .executed:
+                _locksExecutedCount += 1
+                hasLockedForCurrentDeparture = true   // Committed — departure is locked
+            case .rejected:
+                _locksRejectedCount += 1
+                hasLockedForCurrentDeparture = false  // Release reservation — allow retry
+            case .unsupported:
+                _locksUnsupportedCount += 1
+                hasLockedForCurrentDeparture = false  // Release reservation — lock unsupported
+            }
+
+        case .wakeDisplay:
+            switch result {
+            case .executed:
+                _wakesExecutedCount += 1
+                hasWokenForCurrentArrival = true      // Committed — arrival is awoken
+            case .rejected:
+                _wakesRejectedCount += 1
+                hasWokenForCurrentArrival = false     // Release reservation — allow retry
+            case .unsupported:
+                _wakesUnsupportedCount += 1
+                hasWokenForCurrentArrival = false     // Release reservation
+            }
+
+        default:
+            break
+        }
     }
 
     /// Resets policy latches and metrics.
@@ -203,9 +262,13 @@ public final class PolicyEngine: @unchecked Sendable {
         hasWokenForCurrentArrival = false
         _lockAttemptsCount = 0
         _locksExecutedCount = 0
+        _locksRejectedCount = 0
+        _locksUnsupportedCount = 0
         _locksSuppressedCount = 0
         _wakeAttemptsCount = 0
         _wakesExecutedCount = 0
+        _wakesRejectedCount = 0
+        _wakesUnsupportedCount = 0
         _wakesSuppressedCount = 0
     }
 }

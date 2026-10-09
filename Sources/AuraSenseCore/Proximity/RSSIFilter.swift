@@ -23,7 +23,7 @@ public final class RSSIFilter: @unchecked Sendable {
 
         // Sanity check: Reject impossible RF anomalies (e.g., positive RSSI or below -120 dBm)
         guard rssi <= 0 && rssi >= -120 else {
-            return smoothedRSSI
+            return nil
         }
 
         // Check if gap is too long; if so, reset EWMA memory

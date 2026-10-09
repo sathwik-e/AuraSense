@@ -62,30 +62,53 @@ public final class MacOSActionAdapter: ActionProviderProtocol, @unchecked Sendab
     }
 
     public func requestLock() async throws -> ActionResult {
+        return try await requestLock(isValid: nil)
+    }
+
+    /// Concrete override: validates immediately before the irreversible OS lock call.
+    /// A protocol-extension check-then-await is insufficient per ARCHITECTURE.md.
+    public func requestLock(isValid: (@Sendable () -> Bool)?) async throws -> ActionResult {
+        // Validate before throttle record so throttle window isn't consumed on cancellation
+        if let check = isValid, !check() {
+            return .rejected(.requestLock, reason: "Lock request invalidated before OS call")
+        }
+
         guard checkLockThrottleAndRecord() else {
             return .rejected(.requestLock, reason: "Lock request throttled by idempotency latch")
+        }
+
+        // Final validation immediately before irreversible side effect
+        if let check = isValid, !check() {
+            return .rejected(.requestLock, reason: "Lock request invalidated at pre-OS-call gate")
         }
 
         if isDryRun {
             return .executed(.requestLock, details: "Dry-run mode: Screen lock simulated without invoking OS API")
         }
 
-        // 1. Primary mechanism: SACLockScreenImmediate via dynamic loader
-        if let result = executeSACLock() {
-            return result
-        }
-
-        // 2. Secondary fallback: pmset displaysleepnow
-        if let result = executeDisplaySleepFallback() {
-            return result
-        }
-
-        throw ActionError.executionFailed("No available macOS lock screen mechanism succeeded")
+        // Live lock mode: Public documented macOS API for session locking is not provided by Apple
+        // without private framework symbols or synthetic keystrokes.
+        // Per fixes.md, report lock as unsupported and keep live lock disabled.
+        throw ActionError.actionDisabled("Live lock is disabled: public documented macOS session lock API is unavailable without private framework symbols. Dry-run mode remains active.")
     }
 
     public func wakeDisplay() async throws -> ActionResult {
+        return try await wakeDisplay(isValid: nil)
+    }
+
+    /// Concrete override: validates immediately before the irreversible OS wake call.
+    public func wakeDisplay(isValid: (@Sendable () -> Bool)?) async throws -> ActionResult {
+        if let check = isValid, !check() {
+            return .rejected(.wakeDisplay, reason: "Display wake invalidated before OS call")
+        }
+
         guard checkWakeThrottleAndRecord() else {
             return .rejected(.wakeDisplay, reason: "Display wake request throttled by idempotency latch")
+        }
+
+        // Final validation immediately before irreversible side effect
+        if let check = isValid, !check() {
+            return .rejected(.wakeDisplay, reason: "Display wake invalidated at pre-OS-call gate")
         }
 
         if isDryRun {
@@ -106,7 +129,7 @@ public final class MacOSActionAdapter: ActionProviderProtocol, @unchecked Sendab
             throw ActionError.executionFailed("No available macOS display wake mechanism succeeded")
         }
 
-        // 3. Optional synthetic wake key to dismiss screensaver / activate password prompt
+        // 3. Optional synthetic wake key to dismiss screensaver / activate prompt
         if let synth = inputSynthesizer {
             _ = try? await synth.sendWakeKey()
         }
@@ -128,42 +151,6 @@ public final class MacOSActionAdapter: ActionProviderProtocol, @unchecked Sendab
 
     public func noOp() -> ActionResult {
         return .executed(.noOp, details: "macOS Action Adapter no-op")
-    }
-
-    // MARK: - Native Lock Implementation
-
-    private func executeSACLock() -> ActionResult? {
-        let path = "/System/Library/PrivateFrameworks/login.framework/Versions/Current/login"
-        guard let handle = dlopen(path, RTLD_LAZY) else {
-            return nil
-        }
-        defer { dlclose(handle) }
-
-        guard let sym = dlsym(handle, "SACLockScreenImmediate") else {
-            return nil
-        }
-
-        typealias LockFunction = @convention(c) () -> Void
-        let lockFunc = unsafeBitCast(sym, to: LockFunction.self)
-        lockFunc()
-        return .executed(.requestLock, details: "Invoked SACLockScreenImmediate successfully")
-    }
-
-    private func executeDisplaySleepFallback() -> ActionResult? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
-        process.arguments = ["displaysleepnow"]
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-            if process.terminationStatus == 0 {
-                return .executed(.requestLock, details: "Invoked pmset displaysleepnow fallback")
-            }
-        } catch {
-            return nil
-        }
-        return nil
     }
 
     // MARK: - Native Wake Implementation

@@ -5,6 +5,7 @@ public final class BluetoothRecoveryCoordinator: @unchecked Sendable {
     private let lock = NSLock()
     public let scanner: any BLEScannerProtocol
     public let proximityEngine: ProximityEngine
+    public let actionExecutor: ActionExecutor?
 
     private var _lastRecoveryTime: Date?
     private var _recoveryAttemptsCount: Int = 0
@@ -18,9 +19,14 @@ public final class BluetoothRecoveryCoordinator: @unchecked Sendable {
     public var onRecoverySuccess: (@Sendable () -> Void)?
     public var onRadioInterruption: (@Sendable (RadioState) -> Void)?
 
-    public init(scanner: any BLEScannerProtocol, proximityEngine: ProximityEngine) {
+    public init(
+        scanner: any BLEScannerProtocol,
+        proximityEngine: ProximityEngine,
+        actionExecutor: ActionExecutor? = nil
+    ) {
         self.scanner = scanner
         self.proximityEngine = proximityEngine
+        self.actionExecutor = actionExecutor
     }
 
     /// Handles a radio state change and triggers automatic recovery when radio returns to poweredOn.
@@ -42,8 +48,10 @@ public final class BluetoothRecoveryCoordinator: @unchecked Sendable {
             }
             onRecoverySuccess?()
         } else {
-            // Radio interrupted / unavailable
+            // Radio interrupted / unavailable: cancel countdown and invalidate pending actions first (Finding 19)
+            proximityEngine.cancelActiveCountdown(reason: "Bluetooth radio failure: \(newState.rawValue)")
             proximityEngine.updateScannerHealth(isHealthy: false, reason: "Bluetooth radio failure: \(newState.rawValue)")
+            actionExecutor?.invalidate(reason: "Bluetooth radio failure: \(newState.rawValue)")
             onRadioInterruption?(newState)
         }
     }
@@ -54,6 +62,7 @@ public final class BluetoothRecoveryCoordinator: @unchecked Sendable {
         defer { lock.unlock() }
 
         proximityEngine.filter.reset()
+        actionExecutor?.invalidate(reason: "System wake from sleep")
         if scanner.radioState.isAvailable && scanner.authorizationStatus.canScan {
             proximityEngine.updateScannerHealth(isHealthy: true, reason: "Recovery after system wake")
             try? scanner.startScanning(serviceUUIDs: nil)
@@ -68,5 +77,6 @@ public final class BluetoothRecoveryCoordinator: @unchecked Sendable {
         scanner.stopScanning()
         proximityEngine.cancelActiveCountdown(reason: "System entering sleep mode")
         proximityEngine.updateScannerHealth(isHealthy: false, reason: "System sleep")
+        actionExecutor?.invalidate(reason: "System sleep")
     }
 }

@@ -10,6 +10,9 @@ public final class MockActionProvider: ActionProviderProtocol, @unchecked Sendab
     public var isCredentialEntrySupported: Bool
 
     public var shouldSucceed: Bool
+    public var onBeforeLock: (@Sendable () async -> Void)?
+    public var nextLockResult: ActionResult?
+    public var nextWakeResult: ActionResult?
 
     private var _lockCallCount: Int = 0
     private var _wakeCallCount: Int = 0
@@ -71,7 +74,23 @@ public final class MockActionProvider: ActionProviderProtocol, @unchecked Sendab
     }
 
     public func requestLock() async throws -> ActionResult {
+        return try await requestLock(isValid: nil)
+    }
+
+    public func requestLock(isValid: (@Sendable () -> Bool)?) async throws -> ActionResult {
+        if let hook = onBeforeLock {
+            await hook()
+        }
+
+        if let check = isValid, !check() {
+            return .rejected(.requestLock, reason: "Lock request invalidated before execution")
+        }
+
         incrementLockCount()
+
+        if let custom = nextLockResult {
+            return custom
+        }
 
         guard isLockSupported else {
             return .unsupported(.requestLock, reason: "Screen locking not supported")
@@ -83,7 +102,19 @@ public final class MockActionProvider: ActionProviderProtocol, @unchecked Sendab
     }
 
     public func wakeDisplay() async throws -> ActionResult {
+        return try await wakeDisplay(isValid: nil)
+    }
+
+    public func wakeDisplay(isValid: (@Sendable () -> Bool)?) async throws -> ActionResult {
+        if let check = isValid, !check() {
+            return .rejected(.wakeDisplay, reason: "Display wake invalidated before execution")
+        }
+
         incrementWakeCount()
+
+        if let custom = nextWakeResult {
+            return custom
+        }
 
         guard isWakeSupported else {
             return .unsupported(.wakeDisplay, reason: "Display wake not supported")

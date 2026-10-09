@@ -1,6 +1,6 @@
 import Foundation
 
-/// Complete diagnostic snapshot representing runtime state and peripheral observations.
+/// Immutable snapshot of live Bluetooth diagnostics, capabilities, security gate metrics, and action states.
 public struct DiagnosticsSnapshot: Sendable, Codable {
     public let timestamp: Date
     public let radioState: RadioState
@@ -15,15 +15,27 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
     public let wakesExecutedCount: Int
     public let sessionState: SessionState
     public let authPath: SupportedAuthenticationPath
-    public let totalDiscoveredCount: Int
-    public let activeCount: Int
-    public let staleCount: Int
-    public let lostCount: Int
     public let gateAdmittedCount: Int
     public let gateBlockedCount: Int
     public let gateAmbiguityCount: Int
     public let peripherals: [PeripheralDiagnosticsRecord]
     public let recentEvents: [DiagnosticEvent]
+
+    public var totalDiscoveredCount: Int {
+        peripherals.count
+    }
+
+    public var activeCount: Int {
+        peripherals.filter { $0.liveness == .active }.count
+    }
+
+    public var staleCount: Int {
+        peripherals.filter { $0.liveness == .stale }.count
+    }
+
+    public var lostCount: Int {
+        peripherals.filter { $0.liveness == .lost }.count
+    }
 
     public init(
         timestamp: Date = Date(),
@@ -31,11 +43,11 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
         authorizationStatus: AuthorizationStatus,
         isScanning: Bool,
         candidate: CandidateDevice? = nil,
-        proximityState: ProximityState = .unknown(reason: "Uninitialized"),
+        proximityState: ProximityState = .unknown(reason: "Initial"),
         smoothedRSSI: Double? = nil,
         isAutoLockEnabled: Bool = false,
         locksExecutedCount: Int = 0,
-        isAutoWakeEnabled: Bool = true,
+        isAutoWakeEnabled: Bool = false,
         wakesExecutedCount: Int = 0,
         sessionState: SessionState = SessionState(),
         authPath: SupportedAuthenticationPath = .nativeDisplayWakeBiometric,
@@ -63,60 +75,45 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
         self.gateAmbiguityCount = gateAmbiguityCount
         self.peripherals = peripherals
         self.recentEvents = recentEvents
-        self.totalDiscoveredCount = peripherals.count
-        self.activeCount = peripherals.filter { $0.liveness == .active }.count
-        self.staleCount = peripherals.filter { $0.liveness == .stale }.count
-        self.lostCount = peripherals.filter { $0.liveness == .lost }.count
     }
 
-    /// Formats the snapshot into a human-readable ASCII status report.
+    /// Returns human-readable formatted ASCII table diagnostics report.
     public var formattedReport: String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withFullDate, .withTime, .withColonSeparatorInTime]
-        let timeString = formatter.string(from: timestamp)
-
         var lines: [String] = []
         lines.append("================================================================================")
-        lines.append(" AuraSense Proximity & BLE Diagnostics - \(timeString)")
+        lines.append(" AuraSense Proximity & BLE Diagnostics")
         lines.append("================================================================================")
-        lines.append(" Radio State:          \(radioState.rawValue)")
-        lines.append(" Authorization:        \(authorizationStatus.rawValue)")
-        lines.append(" Scanning Active:      \(isScanning ? "YES" : "NO")")
-
+        lines.append(" Timestamp:           \(ISO8601DateFormatter().string(from: timestamp))")
+        lines.append(" Radio State:         \(radioState.rawValue)")
+        lines.append(" Authorization:       \(authorizationStatus.rawValue)")
+        lines.append(" Scanning Active:     \(isScanning)")
         if let candidate = candidate {
-            lines.append(" Selected Candidate:   \(candidate.name) [\(candidate.id.uuidString)]")
-            lines.append(" Candidate Security:   UNVERIFIED (Local peer selection; public BLE is not cryptographic proof)")
+            lines.append(" Candidate:           \(candidate.name) [\(candidate.id.uuidString)]")
+            lines.append(" Proximity State:     \(proximityState.displayLabel)")
+            if let smoothed = smoothedRSSI {
+                lines.append(" Smoothed RSSI:       \(String(format: "%.1f", smoothed)) dBm")
+            }
         } else {
-            lines.append(" Selected Candidate:   None (No device candidate enrolled)")
+            lines.append(" Candidate:           None configured (All peripherals blocked)")
+            lines.append(" Proximity State:     UNKNOWN (Fail-closed)")
         }
-
-        let smoothedStr = smoothedRSSI != nil ? String(format: "%.1f dBm", smoothedRSSI!) : "N/A"
-        lines.append(" Proximity State:      \(proximityState.displayLabel)")
-        lines.append(" Smoothed RSSI:        \(smoothedStr)")
-        lines.append(" Auto-Lock Policy:     \(isAutoLockEnabled ? "ENABLED" : "DISABLED") (Locks Executed: \(locksExecutedCount))")
-        lines.append(" Auto-Wake Policy:     \(isAutoWakeEnabled ? "ENABLED" : "DISABLED") (Wakes Executed: \(wakesExecutedCount))")
+        lines.append(" Security Gate Filter: Admitted: \(gateAdmittedCount) | Blocked: \(gateBlockedCount) | Ambiguity: \(gateAmbiguityCount)")
+        lines.append(" Auto-Lock Policy:     \(isAutoLockEnabled ? "ENABLED" : "DISABLED") (Executed: \(locksExecutedCount))")
+        lines.append(" Auto-Wake Policy:     \(isAutoWakeEnabled ? "ENABLED" : "DISABLED") (Executed: \(wakesExecutedCount))")
         lines.append(" Session State:        Locked: \(sessionState.isScreenLocked ? "YES" : "NO") | Console: \(sessionState.isOnConsole ? "YES" : "NO")")
         lines.append(" Secure Auth Path:     \(authPath.rawValue)")
-        lines.append(" Credential Policy:    ZERO_PLAINTEXT (Plaintext password injection prohibited)")
-        lines.append(" Security Gate Filter: Admitted: \(gateAdmittedCount) | Blocked: \(gateBlockedCount) | Ambiguities: \(gateAmbiguityCount)")
-        lines.append(" Discovered Devices:   \(totalDiscoveredCount) (Active: \(activeCount), Stale: \(staleCount), Lost: \(lostCount))")
+        lines.append(" Credential Policy:    ZERO_PLAINTEXT (Zero plaintext credentials stored, logged, or injected)")
+        lines.append(" Tracked Peripherals: \(totalDiscoveredCount) total (\(activeCount) active, \(staleCount) stale, \(lostCount) lost)")
         lines.append("--------------------------------------------------------------------------------")
-        let hID = Self.pad("Peripheral Identifier", length: 36)
-        let hName = Self.pad("Device Name", length: 18)
-        let hRSSI = Self.pad("RSSI", length: 8, rightAligned: true)
-        let hAvg = Self.pad("Avg", length: 7, rightAligned: true)
-        let hStatus = Self.pad("Status", length: 7)
-        let hPkts = Self.pad("Pkts", length: 6, rightAligned: true)
-        lines.append("\(hID) | \(hName) | \(hRSSI) | \(hAvg) | \(hStatus) | \(hPkts)")
+        lines.append(" UUID                                 | Name            | RSSI    | Avg RSSI| Status  | Pkts  ")
         lines.append("--------------------------------------------------------------------------------")
-
         if peripherals.isEmpty {
-            lines.append("  (No Bluetooth peripherals discovered yet)")
+            lines.append(" (No peripherals discovered yet)")
         } else {
             for record in peripherals {
-                let idStr = Self.pad(record.id.uuidString, length: 36)
-                let nameStr = Self.pad(record.name ?? "<unnamed>", length: 18)
-                let rssiStr = Self.pad("\(record.latestRSSI) dBm", length: 8, rightAligned: true)
+                let idStr = record.id.uuidString
+                let nameStr = Self.pad(record.name ?? "<unnamed>", length: 15)
+                let rssiStr = Self.pad("\(record.latestRSSI) dBm", length: 7, rightAligned: true)
                 let avgStr = Self.pad("\(Int(record.averageRSSI.rounded())) dBm", length: 7, rightAligned: true)
                 let statusStr = Self.pad(record.liveness.rawValue, length: 7)
                 let pktsStr = Self.pad("\(record.packetCount)", length: 6, rightAligned: true)
@@ -149,6 +146,7 @@ public struct DiagnosticsSnapshot: Sendable, Codable {
 }
 
 /// Central manager for collecting, storing, and exporting diagnostics.
+/// Coordinates centralized candidate lifecycle, serialized actions, and authoritative scanner health.
 public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private var events: [DiagnosticEvent] = []
@@ -160,9 +158,55 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
     public let proximityEngine: ProximityEngine
     public let policyEngine: PolicyEngine
     public let authCoordinator: SecureAuthenticationCoordinator
+    public let actionExecutor: ActionExecutor
+
+    private var lastRadioState: RadioState = .poweredOn
+    private var lastAuthorizationStatus: AuthorizationStatus? = nil
+    private var lastLoggedPeripheralEvent: [UUID: Date] = [:]
+    /// Per-peer last full-process time for non-candidate coalescing (Finding 16).
+    /// Candidate peripherals always process every advertisement; non-candidates are
+    /// coalesced to at most one registry/gate/log cycle per peer per second.
+    private var lastNonCandidateProcess: [UUID: Date] = [:]
+    private let nonCandidateCoalesceInterval: TimeInterval = 1.0
+
+    /// Tracks last purge time for Finding 18 — scheduled bounded registry purge
+    private var lastRegistryPurge: Date = Date()
+    private let registryPurgeInterval: TimeInterval = 60.0  // Purge once per minute
+
+    /// Currently pending policy dispatch task (Findings 19 & 20).
+    /// Stored so it can be cancelled when a newer transition supersedes it.
+    private var currentPolicyTask: Task<Void, Never>?
 
     public var onEventLogged: (@Sendable (DiagnosticEvent) -> Void)?
     public var onGateDecision: (@Sendable (GateDecision) -> Void)?
+
+    /// True when the tick timer can do meaningful work (Finding 11).
+    /// Callers should gate their 0.5s timer on this flag instead of waking unconditionally.
+    public var canProcessProximityTicks: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return lastRadioState.isAvailable && trustStore.registeredCandidate != nil
+    }
+
+    /// Opportunistically purges stale registry entries. Called from tick path so no separate timer is needed (Finding 18).
+    public func purgeStalePeriodically(referenceDate: Date = Date()) {
+        lock.lock()
+        let shouldPurge = referenceDate.timeIntervalSince(lastRegistryPurge) >= registryPurgeInterval
+        if shouldPurge {
+            lastRegistryPurge = referenceDate
+            // Bound per-peer tracking dictionaries to prevent memory growth (Findings 16 & 18)
+            lastNonCandidateProcess = lastNonCandidateProcess.filter { referenceDate.timeIntervalSince($0.value) <= 60.0 }
+            lastLoggedPeripheralEvent = lastLoggedPeripheralEvent.filter { referenceDate.timeIntervalSince($0.value) <= 60.0 }
+        }
+        lock.unlock()
+
+        guard shouldPurge else { return }
+        let purged = registry.purgeStalePeripherals(olderThan: 60.0, referenceDate: referenceDate)
+        if purged > 0 {
+            log(level: .debug, category: "Registry.Purge", message: "Purged \(purged) stale peripheral(s) from registry")
+        }
+    }
+
 
     public init(
         maxEvents: Int = 200,
@@ -171,7 +215,8 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
         classifier: AdvertisementClassifier = AdvertisementClassifier(),
         proximityEngine: ProximityEngine = ProximityEngine(),
         policyEngine: PolicyEngine? = nil,
-        authCoordinator: SecureAuthenticationCoordinator? = nil
+        authCoordinator: SecureAuthenticationCoordinator? = nil,
+        actionExecutor: ActionExecutor = ActionExecutor()
     ) {
         self.maxEvents = maxEvents
         self.registry = registry
@@ -181,26 +226,37 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
         self.proximityEngine = proximityEngine
         self.policyEngine = policyEngine ?? PolicyEngine(actionProvider: MacOSActionAdapter(isDryRun: true))
         self.authCoordinator = authCoordinator ?? SecureAuthenticationCoordinator()
+        self.actionExecutor = actionExecutor
 
         self.proximityEngine.updateCandidateAvailability(hasCandidate: trustStore.registeredCandidate != nil)
 
         self.proximityEngine.onStateTransition = { [weak self] oldState, newState, reason in
-            self?.log(
+            guard let self = self else { return }
+            self.log(
                 level: .info,
                 category: "Proximity.FSM",
                 message: "Transition [\(oldState.displayLabel)] -> [\(newState.displayLabel)]: \(reason)"
             )
 
-            guard let self = self else { return }
-            Task {
-                if let decision = await self.policyEngine.handleStateTransition(from: oldState, to: newState, reason: reason) {
-                    self.log(
-                        level: .info,
-                        category: "Policy.Action",
-                        message: "Policy decision: \(decision)"
-                    )
-                }
+            // Advance generation ONCE for this transition.
+            // This implicitly cancels any prior pending action whose generation is now stale.
+            // Do NOT additionally call invalidate() here — that would self-cancel the NEAR token.
+            let generation = self.actionExecutor.advanceGeneration(reason: "State changed to \(newState.displayLabel)")
+
+            // Cancel any previously pending dispatch task and store new one (Findings 19 & 20)
+            self.lock.lock()
+            self.currentPolicyTask?.cancel()
+            let task = Task { [weak self] in
+                guard let self = self else { return }
+                await self.dispatchPolicyTransition(
+                    from: oldState,
+                    to: newState,
+                    reason: reason,
+                    generation: generation
+                )
             }
+            self.currentPolicyTask = task
+            self.lock.unlock()
         }
 
         self.proximityEngine.onCountdownTick = { [weak self] sec in
@@ -212,7 +268,132 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
         }
     }
 
-    /// Records a diagnostic event into the bounded ring buffer.
+    // MARK: - Serialized Policy Dispatch
+
+    private func dispatchPolicyTransition(
+        from oldState: ProximityState,
+        to newState: ProximityState,
+        reason: String,
+        generation: Int64
+    ) async {
+        guard !Task.isCancelled else { return }
+        let targetAction: SecurityAction = newState.isFar ? .requestLock : (newState.isNear ? .wakeDisplay : .noOp)
+        let result = await actionExecutor.executeSerialized(
+            action: targetAction,
+            generation: generation,
+            validate: { [weak self] in
+                guard let self = self else { return false }
+                guard !Task.isCancelled else { return false }
+                let current = self.proximityEngine.currentState
+                if newState.isFar {
+                    guard current.isFar else { return false }
+                    guard self.trustStore.registeredCandidate != nil else { return false }
+                    guard self.lastRadioState.isAvailable else { return false }
+                    guard self.policyEngine.isAutoLockEnabled else { return false }
+                } else if newState.isNear {
+                    guard current.isNear else { return false }
+                    guard self.policyEngine.isAutoWakeEnabled else { return false }
+                }
+                return true
+            },
+            perform: { [weak self] isValid in
+                guard let self = self else { return .rejected(targetAction, reason: "Deallocated") }
+                guard !Task.isCancelled else { return .rejected(targetAction, reason: "Task cancelled") }
+                return await self.policyEngine.handleStateTransition(
+                    from: oldState,
+                    to: newState,
+                    reason: reason,
+                    generation: generation,
+                    isValid: isValid
+                ) ?? .rejected(targetAction, reason: "No policy action executed")
+            }
+        )
+
+        if case .executed = result {
+            self.log(
+                level: .info,
+                category: "Policy.Action",
+                message: "Policy action executed [Gen \(generation)]: \(result)"
+            )
+        }
+    }
+
+    // MARK: - Centralized Candidate Lifecycle
+
+    public func registerCandidate(_ candidate: CandidateDevice) throws {
+        try trustStore.register(candidate: candidate)
+        classifier.setCandidate(candidate)
+        gate.syncCandidate()
+        proximityEngine.updateCandidateAvailability(hasCandidate: true)
+        recomputeScannerHealth(reason: "Candidate registered")
+        log(
+            level: .info,
+            category: "Candidate.Lifecycle",
+            message: "Successfully registered candidate \(candidate.name) [\(candidate.id.uuidString)]"
+        )
+    }
+
+    public func unregisterCandidate() throws {
+        lock.lock()
+        currentPolicyTask?.cancel()
+        currentPolicyTask = nil
+        lock.unlock()
+
+        try trustStore.unregister()
+        classifier.setCandidate(nil)
+        gate.syncCandidate()
+        proximityEngine.updateCandidateAvailability(hasCandidate: false)
+        proximityEngine.filter.reset()
+        proximityEngine.cancelActiveCountdown(reason: "Candidate unregistered")
+        actionExecutor.invalidate(reason: "Candidate unregistered")
+        policyEngine.reset()
+        recomputeScannerHealth(reason: "Candidate unregistered")
+        log(
+            level: .info,
+            category: "Candidate.Lifecycle",
+            message: "Candidate unregistered. Proximity reset to UNKNOWN and pending actions cleared."
+        )
+    }
+
+    // MARK: - Authoritative Scanner Health Recomputation
+
+    public func recomputeScannerHealth(reason: String, referenceDate: Date = Date()) {
+        lock.lock()
+        let radioOk = lastRadioState.isAvailable
+        let canScan = lastAuthorizationStatus?.canScan ?? true
+        let hasCand = trustStore.registeredCandidate != nil
+        let activePeers = registry.activePeripherals(timeout: 15.0, referenceDate: referenceDate)
+
+        let isAmbiguous: Bool
+        if let cand = trustStore.registeredCandidate {
+            let matching = activePeers.filter { peer in
+                peer.id == cand.id || (peer.name != nil && peer.name == cand.name)
+            }
+            isAmbiguous = matching.count > 1
+        } else {
+            isAmbiguous = false
+        }
+
+        let isHealthy = radioOk && canScan && hasCand && !isAmbiguous
+        let explanation: String
+        if !radioOk {
+            explanation = "Radio unavailable: \(lastRadioState.rawValue)"
+        } else if !canScan {
+            explanation = "Bluetooth unauthorized"
+        } else if !hasCand {
+            explanation = "No candidate registered"
+        } else if isAmbiguous {
+            explanation = "Identity ambiguity detected (\(activePeers.count) active peers)"
+        } else {
+            explanation = "Monitoring healthy"
+        }
+        lock.unlock()
+
+        proximityEngine.updateScannerHealth(isHealthy: isHealthy, reason: explanation)
+    }
+
+    // MARK: - Logging & Ring Buffer
+
     public func log(
         level: DiagnosticLevel = .info,
         category: String,
@@ -236,14 +417,12 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
         onEventLogged?(event)
     }
 
-    /// Retrieves all recorded diagnostic events.
     public func recentEvents() -> [DiagnosticEvent] {
         lock.lock()
         defer { lock.unlock() }
         return events
     }
 
-    /// Creates an immutable diagnostic snapshot using current scanner, registry, proximity, and policy state.
     public func snapshot(from scanner: any BLEScannerProtocol) -> DiagnosticsSnapshot {
         let records = registry.diagnosticsRecords()
         let recent = recentEvents()
@@ -271,7 +450,19 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
     // MARK: - BLEScannerDelegate
 
     public func scannerDidChangeRadioState(_ state: RadioState) {
-        proximityEngine.updateScannerHealth(isHealthy: state.isAvailable, reason: "Radio state: \(state.rawValue)")
+        lock.lock()
+        lastRadioState = state
+        if !state.isAvailable {
+            currentPolicyTask?.cancel()
+            currentPolicyTask = nil
+        }
+        lock.unlock()
+
+        if !state.isAvailable {
+            actionExecutor.invalidate(reason: "Radio state \(state.rawValue)")
+        }
+
+        recomputeScannerHealth(reason: "Radio state: \(state.rawValue)")
         log(
             level: state.isAvailable ? .info : .warning,
             category: "BLE.Radio",
@@ -281,9 +472,41 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
     }
 
     public func scannerDidDiscover(peripheral: DiscoveredPeripheral) {
+        // Coalescing non-candidate discoveries (Finding 16):
+        // Candidate peripherals must receive every observation for accurate RSSI cadence and dwell.
+        // Non-candidate peripherals are throttled to at most once per second per peer before
+        // incurring registry updates, active-peripheral filtering, and security gate evaluation.
+        let isCandidatePeer: Bool
+        let shouldProcessNonCandidate: Bool
+        lock.lock()
+        if let cand = trustStore.registeredCandidate {
+            isCandidatePeer = (peripheral.id == cand.id)
+        } else {
+            isCandidatePeer = false
+        }
+
+        if !isCandidatePeer {
+            let now = peripheral.lastSeen
+            if let lastProcess = lastNonCandidateProcess[peripheral.id],
+               now.timeIntervalSince(lastProcess) < nonCandidateCoalesceInterval {
+                shouldProcessNonCandidate = false
+            } else {
+                lastNonCandidateProcess[peripheral.id] = now
+                shouldProcessNonCandidate = true
+            }
+        } else {
+            shouldProcessNonCandidate = true
+        }
+        lock.unlock()
+
+        guard shouldProcessNonCandidate else {
+            // Coalesced non-candidate observation: skip redundant processing
+            return
+        }
+
         registry.registerOrUpdate(peripheral)
 
-        let allActive = registry.allPeripherals()
+        let allActive = registry.activePeripherals(timeout: 15.0, referenceDate: peripheral.lastSeen)
         let decision = gate.evaluate(peripheral: peripheral, allActivePeripherals: allActive)
         onGateDecision?(decision)
 
@@ -297,6 +520,7 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
         case .admitted(let candidate, _, let rssi):
             meta["gate"] = "ADMITTED"
             meta["candidate"] = candidate.name
+            recomputeScannerHealth(reason: "Candidate admitted", referenceDate: peripheral.lastSeen)
             proximityEngine.processSample(rssi: rssi, timestamp: peripheral.lastSeen)
             log(
                 level: .info,
@@ -314,8 +538,7 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
                 meta["reason"] = "Untrusted device"
             case .ambiguousCandidate(let count, let explanation):
                 meta["reason"] = "Ambiguous candidate (\(count) peers)"
-                // Enforce UNKNOWN on ambiguity per ARCHITECTURE.md
-                proximityEngine.updateScannerHealth(isHealthy: false, reason: "Identity ambiguity detected")
+                recomputeScannerHealth(reason: "Identity ambiguity detected", referenceDate: peripheral.lastSeen)
                 log(
                     level: .warning,
                     category: "Security.Gate",
@@ -323,12 +546,28 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
                     metadata: meta
                 )
             }
-            log(
-                level: .debug,
-                category: "BLE.Discovery",
-                message: "[Gate: BLOCKED] Discovered non-candidate peripheral \(peripheral.name ?? "<unnamed>") [\(peripheral.id.uuidString)] RSSI: \(peripheral.latestRSSI) dBm",
-                metadata: meta
-            )
+
+            // Rate-limit debug logging for non-candidate peripherals
+            let shouldLog: Bool
+            lock.lock()
+            let lastLog = lastLoggedPeripheralEvent[peripheral.id]
+            let now = Date()
+            if lastLog == nil || now.timeIntervalSince(lastLog!) > 3.0 {
+                lastLoggedPeripheralEvent[peripheral.id] = now
+                shouldLog = true
+            } else {
+                shouldLog = false
+            }
+            lock.unlock()
+
+            if shouldLog {
+                log(
+                    level: .debug,
+                    category: "BLE.Discovery",
+                    message: "[Gate: BLOCKED] Discovered non-candidate peripheral \(peripheral.name ?? "<unnamed>") [\(peripheral.id.uuidString)] RSSI: \(peripheral.latestRSSI) dBm",
+                    metadata: meta
+                )
+            }
         }
     }
 
@@ -336,7 +575,7 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
         registry.updateRSSI(peripheralID: peripheralID, rssi: rssi, timestamp: timestamp)
 
         if let peripheral = registry.peripheral(for: peripheralID) {
-            let allActive = registry.allPeripherals()
+            let allActive = registry.activePeripherals(timeout: 15.0)
             let decision = gate.evaluate(peripheral: peripheral, allActivePeripherals: allActive)
             onGateDecision?(decision)
 
@@ -344,17 +583,16 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
                 proximityEngine.processSample(rssi: rssi, timestamp: timestamp)
             }
         }
-
-        log(
-            level: .debug,
-            category: "BLE.RSSI",
-            message: "RSSI updated for \(peripheralID.uuidString): \(rssi) dBm",
-            metadata: ["id": peripheralID.uuidString, "rssi": "\(rssi)"]
-        )
     }
 
     public func scannerDidEncounterError(_ error: Error) {
+        lock.lock()
+        currentPolicyTask?.cancel()
+        currentPolicyTask = nil
+        lock.unlock()
+
         proximityEngine.updateScannerHealth(isHealthy: false, reason: error.localizedDescription)
+        actionExecutor.invalidate(reason: "Scanner error: \(error.localizedDescription)")
         log(
             level: .error,
             category: "BLE.Error",

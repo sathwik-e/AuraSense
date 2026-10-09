@@ -30,7 +30,7 @@ struct CredentialVaultTests {
         #expect(newStatus == .configuredEmpty)
         #expect(vault.status == .configuredEmpty)
 
-        vault.addRecord(VaultCredentialRecord(relyingParty: "apple.com", username: "user@example.com", isPasskey: true))
+        try vault.addRecord(VaultCredentialRecord(relyingParty: "apple.com", username: "user@example.com", isPasskey: true))
         #expect(vault.recordCount == 1)
 
         // Reload from disk

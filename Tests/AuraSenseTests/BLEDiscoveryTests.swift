@@ -73,4 +73,67 @@ struct BLEDiscoveryTests {
 
         #expect(peripheral.rssiHistory.count == 20)
     }
+
+    @Test func testUnauthorizedStartDoesNotAutoScanOnRadioRecovery() {
+        // Finding 17: Unauthorized scan attempt must clear monitoring intent and not auto-start
+        let scanner = MockBLEScanner(initialRadioState: .poweredOn, initialAuthorization: .denied)
+        #expect(!scanner.isScanning)
+        #expect(!scanner.isMonitoringRequested)
+
+        #expect(throws: BLEScannerError.self) {
+            try scanner.startScanning()
+        }
+        #expect(!scanner.isMonitoringRequested)
+
+        // Radio cycles off and then back on
+        scanner.simulateRadioStateChange(.poweredOff)
+        scanner.simulateRadioStateChange(.poweredOn)
+
+        // Since intent was not granted, scanner MUST NOT auto-start
+        #expect(!scanner.isScanning)
+        #expect(!scanner.isMonitoringRequested)
+    }
+
+    @Test func testNonCandidateDuplicateBurstIsCoalescedWhileCandidatePreserved() throws {
+        // Finding 16: Coalesce rapid non-candidate duplicate bursts while preserving candidate packet cadence
+        let scanner = MockBLEScanner()
+        let trustStore = InMemoryCandidateTrustStore()
+        let diagnostics = DiagnosticsManager(trustStore: trustStore)
+        scanner.delegate = diagnostics
+
+        let candidateID = UUID()
+        let candidate = CandidateDevice(id: candidateID, name: "Trusted Phone")
+        try diagnostics.registerCandidate(candidate)
+
+        let nonCandidateID = UUID()
+        let now = Date()
+
+        // Non-candidate bursts 10 discovery packets within 100ms
+        for i in 0..<10 {
+            _ = scanner.simulatePeripheralDiscovery(
+                id: nonCandidateID,
+                name: "Noisy Beacon",
+                rssi: -75,
+                timestamp: now.addingTimeInterval(Double(i) * 0.01)
+            )
+        }
+
+        // Candidate bursts 10 discovery packets within 100ms
+        for i in 0..<10 {
+            _ = scanner.simulatePeripheralDiscovery(
+                id: candidateID,
+                name: "Trusted Phone",
+                rssi: -55,
+                timestamp: now.addingTimeInterval(Double(i) * 0.01)
+            )
+        }
+
+        // Non-candidate must be coalesced (only 1 packet registered in 1s window)
+        let nonCandidateRecord = diagnostics.registry.peripheral(for: nonCandidateID)
+        #expect(nonCandidateRecord?.advertisementCount == 1)
+
+        // Candidate must NOT be coalesced (all 10 packets preserved for proximity accuracy)
+        let candidateRecord = diagnostics.registry.peripheral(for: candidateID)
+        #expect(candidateRecord?.advertisementCount == 10)
+    }
 }

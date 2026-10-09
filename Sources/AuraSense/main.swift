@@ -50,7 +50,8 @@ final class AuraSenseCLI: @unchecked Sendable {
 
         self.recoveryCoordinator = BluetoothRecoveryCoordinator(
             scanner: scanner,
-            proximityEngine: proximityEngine
+            proximityEngine: proximityEngine,
+            actionExecutor: diagnostics.actionExecutor
         )
         self.sleepWakeMonitor = SystemSleepWakeMonitor()
 
@@ -214,8 +215,7 @@ final class AuraSenseCLI: @unchecked Sendable {
 
         let candidate = CandidateDevice(id: uuid, name: name)
         do {
-            try trustStore.register(candidate: candidate)
-            diagnostics.gate.syncCandidate()
+            try diagnostics.registerCandidate(candidate)
             print("Successfully registered candidate device:")
             print("  ID:                  \(candidate.id.uuidString)")
             print("  Name:                \(candidate.name)")
@@ -227,8 +227,7 @@ final class AuraSenseCLI: @unchecked Sendable {
 
     private func handleUnregister() {
         do {
-            try trustStore.unregister()
-            diagnostics.gate.syncCandidate()
+            try diagnostics.unregisterCandidate()
             print("Candidate device cleared. Security gate is now blocking all peripherals.")
         } catch {
             print("Failed to unregister candidate: \(error.localizedDescription)")
@@ -361,7 +360,10 @@ final class AuraSenseCLI: @unchecked Sendable {
         }
 
         _ = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            self?.diagnostics.proximityEngine.tick()
+            guard let self = self, self.diagnostics.canProcessProximityTicks else { return }
+            let now = Date()
+            self.diagnostics.proximityEngine.tick(currentTime: now)
+            self.diagnostics.purgeStalePeriodically(referenceDate: now)
         }
 
         _ = menuBarController // Retain controller
@@ -396,7 +398,13 @@ final class AuraSenseCLI: @unchecked Sendable {
         isRunning = true
 
         let tickTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            self?.diagnostics.proximityEngine.tick()
+            guard let self = self else { return }
+            // canProcessProximityTicks gates idle wakeups (Finding 11)
+            guard self.diagnostics.canProcessProximityTicks else { return }
+            let now = Date()
+            self.diagnostics.proximityEngine.tick(currentTime: now)
+            // Opportunistic bounded registry purge without a separate timer (Finding 18)
+            self.diagnostics.purgeStalePeriodically(referenceDate: now)
         }
 
         let heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in

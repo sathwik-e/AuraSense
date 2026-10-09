@@ -6,6 +6,7 @@ public final class MockBLEScanner: BLEScannerProtocol, @unchecked Sendable {
     private var _radioState: RadioState
     private var _authorizationStatus: AuthorizationStatus
     private var _isScanning: Bool = false
+    private var _isMonitoringRequested: Bool = false
 
     public weak var delegate: (any BLEScannerDelegate)?
 
@@ -27,6 +28,12 @@ public final class MockBLEScanner: BLEScannerProtocol, @unchecked Sendable {
         return _isScanning
     }
 
+    public var isMonitoringRequested: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _isMonitoringRequested
+    }
+
     public init(
         initialRadioState: RadioState = .poweredOn,
         initialAuthorization: AuthorizationStatus = .allowedAlways
@@ -39,9 +46,14 @@ public final class MockBLEScanner: BLEScannerProtocol, @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
+        // Finding 17: Validate authorization before recording monitoring intent
         guard _authorizationStatus.isAuthorized else {
+            _isMonitoringRequested = false
             throw BLEScannerError.unauthorized(_authorizationStatus)
         }
+
+        _isMonitoringRequested = true
+
         guard _radioState == .poweredOn else {
             throw BLEScannerError.radioNotPoweredOn(_radioState)
         }
@@ -51,6 +63,7 @@ public final class MockBLEScanner: BLEScannerProtocol, @unchecked Sendable {
     public func stopScanning() {
         lock.lock()
         defer { lock.unlock() }
+        _isMonitoringRequested = false
         _isScanning = false
     }
 
@@ -59,7 +72,11 @@ public final class MockBLEScanner: BLEScannerProtocol, @unchecked Sendable {
     public func simulateRadioStateChange(_ newState: RadioState) {
         lock.lock()
         _radioState = newState
-        if newState != .poweredOn {
+        if newState == .poweredOn {
+            if _isMonitoringRequested && _authorizationStatus.isAuthorized {
+                _isScanning = true
+            }
+        } else {
             _isScanning = false
         }
         lock.unlock()

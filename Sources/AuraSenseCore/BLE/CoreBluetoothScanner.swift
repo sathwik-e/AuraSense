@@ -9,7 +9,7 @@ public final class CoreBluetoothScanner: NSObject, BLEScannerProtocol, @unchecke
 
     private var _radioState: RadioState = .unknown
     private var _isScanning: Bool = false
-    private var _autoStartWhenReady: Bool = false
+    private var _isMonitoringRequested: Bool = false
     private var _targetServiceUUIDs: [CBUUID]?
 
     public weak var delegate: (any BLEScannerDelegate)?
@@ -18,6 +18,12 @@ public final class CoreBluetoothScanner: NSObject, BLEScannerProtocol, @unchecke
         lock.lock()
         defer { lock.unlock() }
         return _radioState
+    }
+
+    public var isMonitoringRequested: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _isMonitoringRequested
     }
 
     public var authorizationStatus: AuthorizationStatus {
@@ -59,25 +65,38 @@ public final class CoreBluetoothScanner: NSObject, BLEScannerProtocol, @unchecke
         lock.lock()
         defer { lock.unlock() }
 
+        // Validate authorization BEFORE setting monitoring intent (Finding 17)
+        // Do not set requested state if we know it will be denied
+        if _radioState == .unauthorized || authorizationStatus == .denied || authorizationStatus == .restricted {
+            // Clear any stale intent — do not auto-start after a denied attempt
+            _isMonitoringRequested = false
+            throw BLEScannerError.unauthorized(authorizationStatus)
+        }
+
         let mappedUUIDs: [CBUUID]? = serviceUUIDs?.compactMap {
             UUID(uuidString: $0) != nil || $0.count == 4 ? CBUUID(string: $0) : nil
         }
         self._targetServiceUUIDs = mappedUUIDs
 
+        // Only set intent after authorization is confirmed/unknown
+        self._isMonitoringRequested = true
+
         if _radioState == .poweredOn {
-            self.beginScanUnderLock()
-        } else if _radioState == .unauthorized {
-            throw BLEScannerError.unauthorized(authorizationStatus)
-        } else {
-            // Radio state not ready yet (e.g. initial .unknown or .resetting). Flag auto-start when poweredOn.
-            _autoStartWhenReady = true
+            if authorizationStatus.canScan {
+                self.beginScanUnderLock()
+            } else {
+                // Authorization check failed at this point — clear intent
+                _isMonitoringRequested = false
+                throw BLEScannerError.unauthorized(authorizationStatus)
+            }
         }
+        // For other radio states (unknown, resetting), intent is set and will start when powered on
     }
 
     public func stopScanning() {
         lock.lock()
         defer { lock.unlock() }
-        _autoStartWhenReady = false
+        _isMonitoringRequested = false
         if _isScanning {
             centralManager?.stopScan()
             _isScanning = false
@@ -86,6 +105,7 @@ public final class CoreBluetoothScanner: NSObject, BLEScannerProtocol, @unchecke
 
     private func beginScanUnderLock() {
         guard let central = centralManager, central.state == .poweredOn else { return }
+        guard !_isScanning else { return }
         let options: [String: Any] = [
             CBCentralManagerScanOptionAllowDuplicatesKey: true
         ]
@@ -141,10 +161,16 @@ extension CoreBluetoothScanner: CBCentralManagerDelegate {
 
         lock.lock()
         _radioState = newState
-        if newState == .poweredOn && _autoStartWhenReady && !_isScanning {
-            beginScanUnderLock()
-        } else if newState != .poweredOn && _isScanning {
-            _isScanning = false
+        if newState == .poweredOn {
+            if _isMonitoringRequested && !_isScanning && authorizationStatus.canScan {
+                beginScanUnderLock()
+            }
+        } else {
+            // Radio no longer poweredOn: explicitly stop scan on central
+            if _isScanning {
+                central.stopScan()
+                _isScanning = false
+            }
         }
         lock.unlock()
 
@@ -156,8 +182,8 @@ extension CoreBluetoothScanner: CBCentralManagerDelegate {
                                advertisementData: [String: Any],
                                rssi RSSI: NSNumber) {
         let rssiValue = RSSI.intValue
-        // Reject invalid/zero/dummy RSSI readings
-        guard rssiValue != 127 else { return }
+        // Reject invalid/zero/dummy RSSI readings (-120 dBm to 0 dBm only)
+        guard rssiValue >= -120 && rssiValue <= 0 else { return }
 
         let parsedAd = parseAdvertisement(from: advertisementData, peripheralName: peripheral.name)
         let now = Date()

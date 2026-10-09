@@ -113,6 +113,28 @@ public final class PeripheralRegistry: @unchecked Sendable {
         return Array(peripherals.values)
     }
 
+    /// Returns only active peripherals seen within the specified timeout window (default: 15 seconds).
+    /// Used for authoritative identity ambiguity checks to ignore disappeared devices.
+    public func activePeripherals(timeout: TimeInterval = 15.0, referenceDate: Date = Date()) -> [DiscoveredPeripheral] {
+        lock.lock()
+        defer { lock.unlock() }
+        return peripherals.values.filter { peripheral in
+            referenceDate.timeIntervalSince(peripheral.lastSeen) <= timeout
+        }
+    }
+
+    /// Purges stale peripherals that have not been seen for longer than the specified threshold.
+    @discardableResult
+    public func purgeStalePeripherals(olderThan: TimeInterval = 60.0, referenceDate: Date = Date()) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        let initialCount = peripherals.count
+        peripherals = peripherals.filter { _, p in
+            referenceDate.timeIntervalSince(p.lastSeen) <= olderThan
+        }
+        return initialCount - peripherals.count
+    }
+
     /// Total count of registered peripherals.
     public var count: Int {
         lock.lock()
