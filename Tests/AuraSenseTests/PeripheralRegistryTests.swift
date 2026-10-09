@@ -4,6 +4,22 @@ import Foundation
 
 struct PeripheralRegistryTests {
 
+    @Test func testOutOfOrderObservationDoesNotRewindRegistry() {
+        let registry = PeripheralRegistry()
+        let id = UUID()
+        let firstSeen = Date()
+        let latestSeen = firstSeen.addingTimeInterval(2)
+
+        registry.registerOrUpdate(DiscoveredPeripheral(id: id, latestRSSI: -50, firstSeen: firstSeen, lastSeen: firstSeen))
+        registry.updateRSSI(peripheralID: id, rssi: -60, timestamp: latestSeen)
+        registry.updateRSSI(peripheralID: id, rssi: -90, timestamp: firstSeen.addingTimeInterval(1))
+
+        let peripheral = registry.peripheral(for: id)
+        #expect(peripheral?.latestRSSI == -60)
+        #expect(peripheral?.lastSeen == latestSeen)
+        #expect(peripheral?.advertisementCount == 2)
+    }
+
     @Test func testSignalCalculations() {
         let registry = PeripheralRegistry()
         let id = UUID()

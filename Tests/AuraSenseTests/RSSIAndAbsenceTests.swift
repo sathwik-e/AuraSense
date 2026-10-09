@@ -4,6 +4,27 @@ import Foundation
 
 struct RSSIAndAbsenceTests {
 
+    @Test func testOutOfOrderObservationCannotRefreshPresenceOrAffectState() {
+        let engine = ProximityEngine(config: ProximityEngineConfig(
+            nearGateRSSI: -60,
+            farGateRSSI: -75,
+            nearDwellDuration: 0.1,
+            staleTimeout: 2
+        ))
+        engine.updateScannerHealth(isHealthy: true)
+        engine.updateCandidateAvailability(hasCandidate: true)
+
+        let start = Date()
+        engine.processSample(rssi: -50, timestamp: start)
+        engine.processSample(rssi: -50, timestamp: start.addingTimeInterval(0.2))
+        #expect(engine.currentState.isNear)
+
+        engine.processSample(rssi: -50, timestamp: start.addingTimeInterval(0.1))
+        engine.tick(currentTime: start.addingTimeInterval(2.3))
+
+        #expect(engine.currentState.isCountdown)
+    }
+
     @Test func testInvalidRSSIFollowedBySilenceExpiresEvidence() {
         let config = ProximityEngineConfig(
             nearGateRSSI: -60.0,
@@ -69,6 +90,76 @@ struct RSSIAndAbsenceTests {
         // At t = 6.1s (> 5s stale timeout from t = 1.0s)
         engine.tick(currentTime: t0.addingTimeInterval(6.1))
         #expect(engine.currentState.isCountdown)
+    }
+
+    @Test func testDeadBandReadingBreaksContinuousFarDwell() {
+        let engine = ProximityEngine(config: ProximityEngineConfig(
+            nearGateRSSI: -60,
+            farGateRSSI: -75,
+            nearDwellDuration: 0.1,
+            farDwellDuration: 1.0,
+            countdownDuration: 5,
+            staleTimeout: 20,
+            medianWindowSize: 1,
+            ewmaAlpha: 1.0
+        ))
+        engine.updateScannerHealth(isHealthy: true)
+        engine.updateCandidateAvailability(hasCandidate: true)
+
+        let start = Date()
+        engine.processSample(rssi: -50, timestamp: start)
+        engine.processSample(rssi: -50, timestamp: start.addingTimeInterval(0.2))
+        #expect(engine.currentState.isNear)
+
+        engine.processSample(rssi: -85, timestamp: start.addingTimeInterval(1.0))
+        engine.processSample(rssi: -70, timestamp: start.addingTimeInterval(1.8))
+        engine.processSample(rssi: -85, timestamp: start.addingTimeInterval(2.2))
+        #expect(engine.currentState.isNear)
+
+        engine.processSample(rssi: -85, timestamp: start.addingTimeInterval(3.3))
+        #expect(engine.currentState.isCountdown)
+    }
+
+    @Test func testSingleExtremeButValidRSSISampleCannotTriggerDeparture() {
+        let engine = ProximityEngine(config: ProximityEngineConfig(
+            nearGateRSSI: -60,
+            farGateRSSI: -75,
+            nearDwellDuration: 0.1,
+            farDwellDuration: 0.5,
+            staleTimeout: 10,
+            medianWindowSize: 1
+        ))
+        engine.updateScannerHealth(isHealthy: true)
+        engine.updateCandidateAvailability(hasCandidate: true)
+        let start = Date()
+        engine.processSample(rssi: -50, timestamp: start)
+        engine.processSample(rssi: -50, timestamp: start.addingTimeInterval(0.2))
+        engine.processSample(rssi: -120, timestamp: start.addingTimeInterval(1.0))
+        engine.tick(currentTime: start.addingTimeInterval(2.0))
+        #expect(engine.currentState.isNear)
+
+        engine.processSample(rssi: -50, timestamp: start.addingTimeInterval(2.1))
+        #expect(engine.currentState.isNear)
+    }
+
+    @Test func testUnavailableTickCannotAdvanceCountdown() {
+        let engine = ProximityEngine(config: ProximityEngineConfig(
+            nearDwellDuration: 0.1,
+            farDwellDuration: 0.1,
+            countdownDuration: 2
+        ))
+        engine.updateScannerHealth(isHealthy: true)
+        engine.updateCandidateAvailability(hasCandidate: true)
+        let start = Date()
+        engine.processSample(rssi: -50, timestamp: start)
+        engine.processSample(rssi: -50, timestamp: start.addingTimeInterval(0.2))
+        engine.processSample(rssi: -85, timestamp: start.addingTimeInterval(1.0))
+        engine.processSample(rssi: -85, timestamp: start.addingTimeInterval(1.2))
+        #expect(engine.currentState.isCountdown)
+
+        engine.updateScannerHealth(isHealthy: false, reason: "Test interruption")
+        engine.tick(currentTime: start.addingTimeInterval(10))
+        #expect(engine.currentState.isUnknown)
     }
 
     @Test func testBurstOfValidFarReadingsTriggersCountdown() {

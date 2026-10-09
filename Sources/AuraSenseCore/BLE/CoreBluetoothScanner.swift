@@ -11,6 +11,7 @@ public final class CoreBluetoothScanner: NSObject, BLEScannerProtocol, @unchecke
     private var _isScanning: Bool = false
     private var _isMonitoringRequested: Bool = false
     private var _targetServiceUUIDs: [CBUUID]?
+    private var radioStatePoll: DispatchSourceTimer?
 
     public weak var delegate: (any BLEScannerDelegate)?
 
@@ -51,19 +52,34 @@ public final class CoreBluetoothScanner: NSObject, BLEScannerProtocol, @unchecke
         return _isScanning
     }
 
-    public init(queue: DispatchQueue = DispatchQueue(label: "com.aurasense.ble.scanner", qos: .userInitiated)) {
+    public init(queue: DispatchQueue = .main) {
         self.queue = queue
         super.init()
-        self.centralManager = CBCentralManager(
-            delegate: self,
-            queue: self.queue,
-            options: [CBCentralManagerOptionShowPowerAlertKey: false]
-        )
     }
 
     public func startScanning(serviceUUIDs: [String]? = nil) throws {
         lock.lock()
         defer { lock.unlock() }
+
+        if centralManager == nil {
+            centralManager = CBCentralManager(
+                delegate: self,
+                queue: queue,
+                options: [CBCentralManagerOptionShowPowerAlertKey: false]
+            )
+        }
+
+        if let centralManager {
+            switch centralManager.state {
+            case .poweredOn: _radioState = .poweredOn
+            case .poweredOff: _radioState = .poweredOff
+            case .unauthorized: _radioState = .unauthorized
+            case .unsupported: _radioState = .unsupported
+            case .resetting: _radioState = .resetting
+            case .unknown: _radioState = .unknown
+            @unknown default: _radioState = .unknown
+            }
+        }
 
         // Validate authorization BEFORE setting monitoring intent (Finding 17)
         // Do not set requested state if we know it will be denied
@@ -82,13 +98,15 @@ public final class CoreBluetoothScanner: NSObject, BLEScannerProtocol, @unchecke
         self._isMonitoringRequested = true
 
         if _radioState == .poweredOn {
-            if authorizationStatus.canScan {
+            if authorizationStatus.canScan || authorizationStatus == .notDetermined {
                 self.beginScanUnderLock()
             } else {
                 // Authorization check failed at this point — clear intent
                 _isMonitoringRequested = false
                 throw BLEScannerError.unauthorized(authorizationStatus)
             }
+        } else if _radioState == .unknown || _radioState == .resetting {
+            scheduleRadioStatePollUnderLock()
         }
         // For other radio states (unknown, resetting), intent is set and will start when powered on
     }
@@ -97,6 +115,8 @@ public final class CoreBluetoothScanner: NSObject, BLEScannerProtocol, @unchecke
         lock.lock()
         defer { lock.unlock() }
         _isMonitoringRequested = false
+        radioStatePoll?.cancel()
+        radioStatePoll = nil
         if _isScanning {
             centralManager?.stopScan()
             _isScanning = false
@@ -111,6 +131,49 @@ public final class CoreBluetoothScanner: NSObject, BLEScannerProtocol, @unchecke
         ]
         central.scanForPeripherals(withServices: _targetServiceUUIDs, options: options)
         _isScanning = true
+    }
+
+    private func scheduleRadioStatePollUnderLock() {
+        guard radioStatePoll == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + .milliseconds(500), repeating: .seconds(1))
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            guard self._isMonitoringRequested, let central = self.centralManager else {
+                self.radioStatePoll?.cancel()
+                self.radioStatePoll = nil
+                self.lock.unlock()
+                return
+            }
+
+            let state: RadioState
+            switch central.state {
+            case .poweredOn: state = .poweredOn
+            case .poweredOff: state = .poweredOff
+            case .unauthorized: state = .unauthorized
+            case .unsupported: state = .unsupported
+            case .resetting: state = .resetting
+            case .unknown: state = .unknown
+            @unknown default: state = .unknown
+            }
+            let stateChanged = self._radioState != state
+            self._radioState = state
+            if state == .poweredOn && (self.authorizationStatus.canScan || self.authorizationStatus == .notDetermined) {
+                self.beginScanUnderLock()
+                self.radioStatePoll?.cancel()
+                self.radioStatePoll = nil
+            } else if state == .poweredOff || state == .unauthorized || state == .unsupported {
+                self.radioStatePoll?.cancel()
+                self.radioStatePoll = nil
+            }
+            self.lock.unlock()
+            if stateChanged {
+                self.delegate?.scannerDidChangeRadioState(state)
+            }
+        }
+        radioStatePoll = timer
+        timer.resume()
     }
 
     private func parseAdvertisement(from dict: [String: Any], peripheralName: String?) -> AdvertisementData {
@@ -161,8 +224,19 @@ extension CoreBluetoothScanner: CBCentralManagerDelegate {
 
         lock.lock()
         _radioState = newState
-        if newState == .poweredOn {
-            if _isMonitoringRequested && !_isScanning && authorizationStatus.canScan {
+        if newState == .poweredOn || newState == .poweredOff || newState == .unauthorized || newState == .unsupported {
+            radioStatePoll?.cancel()
+            radioStatePoll = nil
+        }
+        if newState == .unauthorized || authorizationStatus == .denied || authorizationStatus == .restricted {
+            _isMonitoringRequested = false
+            if _isScanning {
+                central.stopScan()
+                _isScanning = false
+            }
+        } else if newState == .poweredOn {
+            if _isMonitoringRequested && !_isScanning &&
+                (authorizationStatus.canScan || authorizationStatus == .notDetermined) {
                 beginScanUnderLock()
             }
         } else {

@@ -179,16 +179,17 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
 
     public var onEventLogged: (@Sendable (DiagnosticEvent) -> Void)?
     public var onGateDecision: (@Sendable (GateDecision) -> Void)?
+    public var onProximityTickReadinessChanged: (@Sendable (Bool) -> Void)?
 
     /// True when the tick timer can do meaningful work (Finding 11).
     /// Callers should gate their 0.5s timer on this flag instead of waking unconditionally.
     public var canProcessProximityTicks: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return lastRadioState.isAvailable && trustStore.registeredCandidate != nil
+        return lastRadioState.isAvailable && proximityEngine.isReadyForEvaluation
     }
 
-    /// Opportunistically purges stale registry entries. Called from tick path so no separate timer is needed (Finding 18).
+    /// Opportunistically purges stale registry entries and per-peer tracking maps.
     public func purgeStalePeriodically(referenceDate: Date = Date()) {
         lock.lock()
         let shouldPurge = referenceDate.timeIntervalSince(lastRegistryPurge) >= registryPurgeInterval
@@ -264,6 +265,14 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
                 level: .warning,
                 category: "Proximity.Countdown",
                 message: "Departure countdown active: \(sec)s remaining"
+            )
+        }
+
+        if let loadError = trustStore.lastLoadError {
+            log(
+                level: .error,
+                category: "Candidate.Persistence",
+                message: "Failed to load registered candidate: \(loadError.localizedDescription)"
             )
         }
     }
@@ -390,6 +399,7 @@ public final class DiagnosticsManager: BLEScannerDelegate, @unchecked Sendable {
         lock.unlock()
 
         proximityEngine.updateScannerHealth(isHealthy: isHealthy, reason: explanation)
+        onProximityTickReadinessChanged?(canProcessProximityTicks)
     }
 
     // MARK: - Logging & Ring Buffer

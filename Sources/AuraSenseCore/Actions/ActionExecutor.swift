@@ -70,20 +70,14 @@ public final class ActionExecutor: @unchecked Sendable {
         }
 
         // Acquire serial permit — suspends until previous action completes
-        return await serialActor.runExclusive {
+        return await serialActor.runExclusive(action: action) {
             // Re-check immediately after acquiring permit (state may have changed while waiting)
             guard !Task.isCancelled && liveValidator() else {
                 return .rejected(action, reason: "Action cancelled after acquiring permit: task cancelled, stale generation, or invalid state")
             }
 
             do {
-                let result = try await perform(liveValidator)
-
-                // Post-completion re-verify: if state flipped after completion, discard
-                guard !Task.isCancelled && liveValidator() else {
-                    return .rejected(action, reason: "Action completed but superseded by state transition")
-                }
-                return result
+                return try await perform(liveValidator)
             } catch {
                 return .rejected(action, reason: "Action execution threw error: \(error.localizedDescription)")
             }
@@ -96,7 +90,41 @@ public final class ActionExecutor: @unchecked Sendable {
 /// Actor that serializes async action execution.
 /// At most one task holds the permit at a time; others queue awaiting their turn.
 private actor ActionSerialActor {
-    func runExclusive(_ body: @Sendable () async -> ActionResult) async -> ActionResult {
-        return await body()
+    private var isExecuting = false
+    private var waitingContinuation: CheckedContinuation<Bool, Never>?
+
+    func runExclusive(
+        action: SecurityAction,
+        body: @Sendable () async -> ActionResult
+    ) async -> ActionResult {
+        let acquired = await acquire()
+        guard acquired else {
+            return .rejected(action, reason: "Action superseded while waiting for the execution permit")
+        }
+
+        let result = await body()
+        release()
+        return result
+    }
+
+    private func acquire() async -> Bool {
+        guard isExecuting else {
+            isExecuting = true
+            return true
+        }
+
+        waitingContinuation?.resume(returning: false)
+        return await withCheckedContinuation { continuation in
+            waitingContinuation = continuation
+        }
+    }
+
+    private func release() {
+        if let continuation = waitingContinuation {
+            waitingContinuation = nil
+            continuation.resume(returning: true)
+        } else {
+            isExecuting = false
+        }
     }
 }

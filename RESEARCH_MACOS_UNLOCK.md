@@ -10,7 +10,7 @@
 
 Phase 6 of AuraSense evaluates proximity-based authentication and unlock mechanisms on macOS. The goal is to determine a secure, supported unlock path while strictly adhering to the fundamental constraint: **Do not store or inject a plaintext password**.
 
-This document evaluates the six possible technical paths on macOS, articulates why third-party simulated password injection (the BLEUnlock model) is rejected as insecure and non-compliant, and specifies the implementation of the secure, supported native unlock path.
+This document evaluates macOS authentication paths and rejects third-party simulated password injection (the BLEUnlock model). AuraSense currently has no supported mechanism to unlock the macOS session; Apple Watch Auto Unlock is independent system functionality.
 
 ---
 
@@ -20,12 +20,12 @@ This document evaluates the six possible technical paths on macOS, articulates w
 * **Mechanism:** Coordinated between watchOS and macOS using iCloud identity, Bluetooth LE discovery, Continuity pairing keys stored in the Secure Enclave, and **802.11 Time-of-Flight (RTT) distance bounding** to prevent relay attacks.
 * **Apple API Availability:** Private framework (`Sharing.framework`, `SFAutoUnlockManager`). Apple does not offer a public third-party API to add arbitrary BLE devices as Auto Unlock tokens.
 * **Security Rating:** High. Cryptographically authenticated, hardware-backed, relay-resistant.
-* **AuraSense Integration:** **Supported Native Path**. When AuraSense detects candidate arrival and wakes the display (via `IOPMAssertionDeclareUserActivity`), macOS's native Continuity engine immediately initiates its secure Apple Watch unlock without requiring password entry.
+* **AuraSense Integration:** Not directly integrated. AuraSense cannot initiate or observe the private Auto Unlock flow; the user may continue using Apple's independently configured feature.
 
 ### Path 2: Display Wake & Touch ID / Biometric Prompt Readiness
 * **Mechanism:** Upon verified proximity return to `NEAR`, AuraSense requests display wake and issues a safe non-credential wake event (`CGEvent` Space/Shift). This awakens the display and activates the Touch ID / Watch sensor loop.
 * **Security Rating:** High. Zero credentials stored; zero synthetic keystrokes injected; preserves full login protections and FileVault guarantees.
-* **AuraSense Integration:** **Supported Primary Path**. Delivers instant biometric readiness upon sitting down at the Mac.
+* **AuraSense Integration:** Experimental display-wake request only. It cannot guarantee a Touch ID prompt or wake a sleeping Mac/external display, and cannot unlock the session.
 
 ### Path 3: LocalAuthentication Framework (`LAContext`)
 * **Mechanism:** `LAContext.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, ...)` allows biometric evaluation and user verification.

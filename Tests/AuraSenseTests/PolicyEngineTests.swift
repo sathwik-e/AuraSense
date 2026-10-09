@@ -3,6 +3,24 @@ import Foundation
 @testable import AuraSenseCore
 
 struct PolicyEngineTests {
+    private final class TestScreenLockMechanism: MacOSScreenLockMechanismProtocol, @unchecked Sendable {
+        let isAvailable: Bool
+        var isSessionLocked: Bool
+        var lockResult: Bool
+        private(set) var lockCallCount = 0
+
+        init(isAvailable: Bool = true, isSessionLocked: Bool = false, lockResult: Bool = true) {
+            self.isAvailable = isAvailable
+            self.isSessionLocked = isSessionLocked
+            self.lockResult = lockResult
+        }
+
+        func lockSession() throws -> Bool {
+            lockCallCount += 1
+            isSessionLocked = lockResult
+            return lockResult
+        }
+    }
 
     @Test func testAutoLockDisabledSuppressesLock() async {
         let mockAction = MockActionProvider(isLockSupported: true)
@@ -48,6 +66,26 @@ struct PolicyEngineTests {
         } else {
             Issue.record("Expected executed action when auto-lock enabled")
         }
+    }
+
+    @Test func testConcurrentDepartureTransitionsReserveOnlyOneLock() async {
+        let mockProvider = MockActionProvider(isLockSupported: true)
+        let policy = PolicyEngine(actionProvider: mockProvider, isAutoLockEnabled: true)
+
+        async let first = policy.handleStateTransition(
+            from: .countdown(secondsRemaining: 0),
+            to: .far(dwellDuration: 10),
+            reason: "departure"
+        )
+        async let second = policy.handleStateTransition(
+            from: .countdown(secondsRemaining: 0),
+            to: .far(dwellDuration: 10),
+            reason: "duplicate departure"
+        )
+
+        _ = await (first, second)
+        #expect(mockProvider.lockCallCount == 1)
+        #expect(policy.locksExecutedCount == 1)
     }
 
     @Test func testIdempotencyLatchSuppressesRepeatedLocksInFar() async {
@@ -186,7 +224,12 @@ struct PolicyEngineTests {
     }
 
     @Test func testMacOSActionAdapterDryRunAndThrottle() async throws {
-        let adapter = MacOSActionAdapter(isDryRun: true, minimumLockInterval: 2.0, minimumWakeInterval: 2.0)
+        let adapter = MacOSActionAdapter(
+            isDryRun: true,
+            minimumLockInterval: 2.0,
+            minimumWakeInterval: 2.0,
+            screenLocker: TestScreenLockMechanism()
+        )
         #expect(adapter.isDryRun)
         #expect(adapter.isLockSupported)
         #expect(adapter.isWakeSupported)
@@ -225,6 +268,62 @@ struct PolicyEngineTests {
             #expect(reason.contains("throttled"))
         } else {
             Issue.record("Expected wake throttle rejection")
+        }
+    }
+
+    @Test func testLiveLockMechanismExecutesAndVerifiesWithoutTouchingHost() async throws {
+        let mechanism = TestScreenLockMechanism()
+        let adapter = MacOSActionAdapter(isDryRun: false, screenLocker: mechanism)
+        let result = try await adapter.requestLock()
+
+        if case .executed(.requestLock, let details) = result {
+            #expect(details.contains("verified"))
+            #expect(mechanism.lockCallCount == 1)
+        } else {
+            Issue.record("Expected injected live lock mechanism to execute")
+        }
+    }
+
+    @Test func testLiveLockReportsUnsupportedWhenMechanismUnavailable() async throws {
+        let adapter = MacOSActionAdapter(
+            isDryRun: false,
+            screenLocker: TestScreenLockMechanism(isAvailable: false)
+        )
+        let result = try await adapter.requestLock()
+        if case .unsupported(.requestLock, let reason) = result {
+            #expect(reason.contains("unavailable"))
+        } else {
+            Issue.record("Expected unavailable lock mechanism to be reported")
+        }
+    }
+
+    @Test func testAlreadyLockedSessionDoesNotIssueAnotherLock() async throws {
+        let mechanism = TestScreenLockMechanism(isSessionLocked: true)
+        let adapter = MacOSActionAdapter(isDryRun: false, screenLocker: mechanism)
+        let result = try await adapter.requestLock()
+        if case .executed(.requestLock, let details) = result {
+            #expect(details.contains("already locked"))
+            #expect(mechanism.lockCallCount == 0)
+        } else {
+            Issue.record("Expected already-locked session to be idempotent")
+        }
+    }
+
+    @Test func testMacOSAdapterRejectsInvalidatedActionsBeforeSideEffects() async throws {
+        let adapter = MacOSActionAdapter(isDryRun: false, screenLocker: TestScreenLockMechanism())
+
+        let lockResult = try await adapter.requestLock(isValid: { false })
+        let wakeResult = try await adapter.wakeDisplay(isValid: { false })
+
+        if case .rejected(.requestLock, _) = lockResult {
+            #expect(true)
+        } else {
+            Issue.record("Expected invalidated lock to be rejected before execution")
+        }
+        if case .rejected(.wakeDisplay, _) = wakeResult {
+            #expect(true)
+        } else {
+            Issue.record("Expected invalidated wake to be rejected before execution")
         }
     }
 

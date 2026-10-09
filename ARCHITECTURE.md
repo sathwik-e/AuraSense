@@ -1,12 +1,25 @@
 # AuraSense Architecture and Security Review
 
-**Status:** revised pre-implementation design. AuraSense is a Mac-only menu-bar utility targeting macOS 26 and later. No iOS companion app is part of the product. The Mac may observe nearby Bluetooth advertisements and control its own session/display, subject to the limitations below.
+**Status:** implementation in progress. AuraSense is a Mac-only Swift package targeting macOS 26 and later. The source provides BLE discovery, explicit nearby-peer selection, selected-peer filtering, RSSI state tracking, diagnostics, a menu-bar UI, display-wake requests, and an experimental private-API screen-lock request. Unlocking is not implemented. No iOS companion app is part of the product.
 
 ## Executive decision
 
 Use the Mac's CoreBluetooth central to scan for nearby BLE devices, let the user select the iPhone, and monitor the selected peer using available CoreBluetooth identity plus RSSI. BLEUnlock documents a no-phone-app path and says Apple devices signed in to the same Apple Account may expose a resolved stable address to its scanner; treat this as a behavior to validate on actual hardware, not a public Apple identity guarantee. Missing, changing, or ambiguous identity means `UNKNOWN`, not `FAR`.
 
-BLEUnlock achieves “no password prompt on each return” by collecting the user's Mac login password during setup, storing it in Keychain, and using Accessibility-authorized input to enter it at the macOS lock screen. AuraSense can follow that model only as a clear, separately opted-in convenience feature: the user authenticates once during setup, then AuraSense retrieves the credential from Keychain and types it after the selected phone returns. This is not native Auto Unlock, and it materially increases risk. A native Mac-only app can do BLE detection, UI, countdown, locking and display wake; password injection is a fragile UI-automation workaround. Keep native Apple Watch Auto Unlock available as an alternative. Never describe injected credentials as secure proximity authentication.
+BLEUnlock uses a stored login password and Accessibility-authorized input. AuraSense rejects this approach: it does not store or inject Mac login credentials. A public general-purpose API for third-party iPhone-proximity authentication is unavailable. Apple Watch Auto Unlock remains an independent macOS feature; AuraSense cannot initiate or control it.
+
+## Verified implementation status
+
+- CoreBluetooth scanning and peer discovery are implemented. The selected peer is matched using its local `CBPeer.identifier`, which is not cryptographic identity and may not be stable across all system conditions.
+- RSSI median/EWMA filtering, hysteresis, dwell, stale-evidence handling, countdown, candidate ambiguity checks, scanner recovery, diagnostics, settings persistence, and a menu-bar interface are implemented with unit tests.
+- Display wake requests use an IOKit user-activity assertion with a `caffeinate` fallback. Success means the request was accepted, not that a sleeping Mac or external monitor woke; validate on target hardware.
+- Screen lock calls `SACLockScreenImmediate` from private `login.framework`, matching BLEUnlock/BLELock. On the current M4/macOS 27.0.1 host the symbol resolved, returned success, and the session detector observed the locked state. This is undocumented, unsupported by Apple, and may break; it is experimental. Unit tests inject a fake lock mechanism; automatic proximity-triggered operation with a phone has not been tested end-to-end.
+- Clicking the menu-bar phone-and-lock icon opens a status popover with the selected phone, recent RSSI/presence, policy toggles, Lock Now, and diagnostics. “Open AuraSense” opens a native resizable dashboard showing proximity, radio/permission state, the selected iPhone, nearby BLE devices, automation settings, and diagnostics actions. First launch automatically opens device setup if no phone is selected. The live setup window shows clickable nearby-device rows and RSSI; without a selection, all peripherals remain blocked. The selected CoreBluetooth identifier is not proof of ownership.
+- The dashboard and setup UI use native AppKit controls and system colors; dashboard status refreshes from the diagnostics snapshot while open. Accessibility permission is not used to enter credentials. No automatic unlock path is implemented or supported by AuraSense.
+- `scripts/build_dmg.sh` builds `build/AuraSense.dmg` with a custom phone-and-lock app icon, high-contrast branded Finder background, saved drag-to-Applications layout, and no runtime dependencies. The current bundle is ad-hoc signed only, not notarized.
+- BLE-triggered OS unlocking and credential entry are disabled. The credential vault now stores imported password secrets in the macOS Keychain with device-only, user-presence access control; its JSON file contains metadata only. Apple system credential-exchange payload handling supports password items only. The required credential-provider extension and app activity handoff are not yet part of this Swift-package app bundle, so end-to-end import from a password manager is not yet wired.
+- AuraSense does not determine whether the display is asleep, the Mac is sleeping, a session is locked, or the login window/FileVault is active. It cannot change those authentication states. Closed-lid external-display operation depends on macOS clamshell and power behavior.
+- No `.entitlements` file, Xcode project, signing, or notarization configuration is present. The app bundle is assembled by `scripts/build_app.sh`.
 
 ## Architecture
 
@@ -28,9 +41,7 @@ flowchart LR
     OS --> UI
   end
   iPhone[Nearby iPhone broadcasts (system-controlled)] -->|observable BLE advertisements, when available| BLE
-  Secrets[Login credential in Keychain, opt-in only] --> OS
-  OS -->|lock / display wake / Accessibility input| Session[macOS session + displays]
-  Session -. loginwindow may reject input; OS remains authoritative .-> OS
+  OS -->|best-effort display wake request| Session[macOS session + displays]
 ```
 
 ### Modules
@@ -41,10 +52,10 @@ flowchart LR
 | Advertisement classifier | User-selected CoreBluetooth peer tracking and candidate consistency. Peer identity is not cryptographically verified; ambiguous matches mean `UNKNOWN`. |
 | Signal processor | Per-device RSSI samples, robust smoothing, sample freshness, confidence and quality flags. |
 | Presence engine | `NEAR`, `FAR`, `UNKNOWN` transitions and timers, independent of UI and OS actions. |
-| Policy engine | User-configured actions; 5-second cancellable departure countdown; healthy-monitor gate; explicit opt-in gate for credential entry. |
-| macOS action adapter | Narrow interface (`requestLock`, `wakeDisplay`, `requestCredentialEntry`, `notify`, `noOp`), capability reporting, idempotency and fail-safe behavior. Credential entry is opt-in and isolated from BLE/state logic. |
+| Policy engine | User-configured actions; 5-second cancellable departure countdown; healthy-monitor gate. Credential entry is disabled. |
+| macOS action adapter | Narrow interface with capability reporting. Screen lock uses a runtime-resolved private macOS symbol and verifies locked state; credential entry remains unsupported. |
 | Settings/status UI | Clean native menu-bar popover, clear state/countdown/cancel, device selection, onboarding, permissions and settings. |
-| Credential vault | Optional Keychain item for the login credential, with app-specific access control; never store in preferences, logs, files, or crash reports. Keychain consent and credential re-enrollment are explicit. |
+| Credential vault | Password values are stored in Keychain, gated by user presence and available only while unlocked on this Mac. Import mapping accepts password entries from an Apple credential-exchange payload; passkeys and other item types are deliberately skipped. It is separate from proximity and never stores the Mac login password. |
 
 ## Device identification and options
 
@@ -58,17 +69,20 @@ CoreBluetooth `CBPeer.identifier` is an OS-assigned UUID when the local manager 
 | C2. Phone app + local network rendezvous | App can report presence while active; authenticated TLS can identify enrolled app. | Background execution/network reachability are not a reliable continuous heartbeat; Wi-Fi changes, sleep, AP isolation and app suspension cause false absence. Useful as a supplemental channel, not sole sensor. |
 | C3. BLE beacon / iBeacon-style advertisement | Low-data presence beacon; no GATT connection required. | Beacon payloads are replayable and cloneable; RSSI is not distance. iOS beacon advertising/background behavior and scan restrictions remain; static beacon identity is not authentication. Not suitable for unlock. |
 
-**Identity conclusion:** the Mac can manually select a candidate and track its CoreBluetooth peer identifier. The UUID is locally assigned, not cryptographic identity. BLEUnlock reports Apple devices on the same Apple Account may resolve to a stable address; validate on supported hardware/OS versions and never treat it as a security guarantee. If identity becomes ambiguous, stop credential entry and transition to `UNKNOWN`.
+**Identity conclusion:** the Mac can manually select a candidate and track its CoreBluetooth peer identifier. The UUID is locally assigned, not cryptographic identity. BLEUnlock reports Apple devices on the same Apple Account may resolve to a stable address; validate on supported hardware/OS versions and never treat it as a security guarantee. If identity becomes ambiguous, transition to `UNKNOWN` and perform no automatic action.
 
 ## User experience and packaging
 
-- Menu-bar-first app with a custom monochrome template icon that remains legible in light/dark menu bars; show a small status dot/badge for monitoring, near, away/countdown, or needs-attention. Bundle a polished app icon for Finder/Dock/DMG as well.
-- Clicking the menu-bar item opens a compact native popover: selected iPhone, `NEAR`/`AWAY`/`UNKNOWN`, scan health, current RSSI trend, and a large live 5-second countdown with an immediate Cancel/“I’m here” action.
-- A focused setup window walks through Bluetooth access, candidate selection, lock behavior, optional credential enrollment, Accessibility authorization, and launch-at-login. Keep auto-unlock visibly separate and disabled until the user opts in.
-- Use SwiftUI/AppKit and SF Symbols/native controls; no webview UI or downloaded assets/runtime. Treat icon artwork as a bundled vector/PDF or asset-catalog source.
-- Set the deployment target to macOS 26. Deliver a Developer ID signed and notarized DMG, with drag-to-Applications install, version/build metadata, and no separate package manager or runtime installer. First launch still requires macOS permission prompts/settings; credential enrollment is a one-time user step. “Works after DMG install” means no extra runtime dependency, not silent permissions or zero setup.
+- Clicking the menu-bar phone-and-lock icon opens a native popover with presence, selected phone, recent signal, Auto-Lock/Auto-Wake, Lock Now, diagnostics, and quit.
+- On first launch without a selected phone, AuraSense automatically opens device setup. The popover's “Choose your iPhone…” / “Change trusted iPhone…” action opens the same live nearby-device list, which shows names, signal strength, and local IDs. Select a device explicitly; until then, all peripherals remain blocked. Names and RSSI are descriptive, not identity proof.
+- The setup window refreshes device rows continuously and offers a manual rescan. A dedicated preferences window and editable RSSI/timer controls remain planned.
+- `scripts/build_dmg.sh` produces the phone-and-lock app icon, high-contrast branded Finder background, and drag-to-Applications layout. The app is ad-hoc signed and not notarized; first launch still requires macOS Bluetooth permission.
 
-### First-launch credential onboarding
+### Proposed credential-vault onboarding (not implemented)
+
+The vault is a separate credential-management capability; it does not enable Mac proximity unlocking or store the Mac login password. Password secrets are held in Keychain under `WhenUnlockedThisDeviceOnly` plus user-presence access control. Metadata remains in the app-support JSON file. The current import mapper supports basic username/password records only; passkey private-key handling is not implemented.
+
+**Import integration status:** AuraSense can map `ASExportedCredentialData` password entries into Keychain-backed records. Apple's documented exchange flow also requires a credential-provider extension declaring credential-exchange support and an app `NSUserActivity` receiver. `scripts/build_app.sh` currently bundles only the SwiftPM executable and does not create that extension, so the complete system-mediated transfer cannot yet be initiated/received by the shipped app.
 
 On first launch, show this simple choice before setting up the credential vault:
 
@@ -111,10 +125,6 @@ stateDiagram-v2
   COUNTDOWN --> NEAR: candidate returns above near gate; cancel timer
   COUNTDOWN --> FAR: 5 seconds elapse and scan remains healthy
   FAR --> NEAR: candidate returns above near gate / request display wake
-  NEAR --> AUTH_ATTEMPT: locked + enabled + near dwell met
-  AUTH_ATTEMPT --> UNLOCKED: lock screen accepts credential input
-  AUTH_ATTEMPT --> FAR: rejected / permission missing / identity uncertain
-  UNLOCKED --> FAR: candidate leaves and countdown completes
   NEAR --> UNKNOWN: scan unavailable / evidence stale / ambiguous peers
   FAR --> UNKNOWN: scan unavailable / evidence stale / ambiguous peers
   COUNTDOWN --> UNKNOWN: scan unavailable; cancel timer
@@ -123,7 +133,7 @@ stateDiagram-v2
   FAR --> FAR: samples in hysteresis band
 ```
 
-**Meaning:** `NEAR` means the selected candidate is observed above the near gate; this is convenience presence, not cryptographic authentication. `COUNTDOWN` visibly counts 5, 4, 3, 2, 1 and cancels as soon as the candidate returns. `FAR` requires healthy scanning and sustained absence through dwell plus countdown. `AUTH_ATTEMPT` is allowed only when the user enabled it, the session is locked, a Keychain credential exists, Accessibility is authorized, and near dwell is satisfied. The app types into the lock UI; it never declares success based on BLE alone. If lock UI state is uncertain, do not type. Startup remains `UNKNOWN` until the selected peer has been observed.
+**Meaning:** `NEAR` means the selected candidate is observed above the near gate; this is convenience presence, not cryptographic authentication. `COUNTDOWN` visibly counts down and cancels as soon as the candidate returns. `FAR` follows the configured dwell and countdown while monitoring remains healthy. Startup remains `UNKNOWN` until the selected peer has been observed. Authentication and operating-system unlocking are not implemented.
 
 ### RSSI filtering and conceptual gates
 
@@ -139,7 +149,7 @@ Mark evidence stale after a configurable age based on measured advertisement cad
 - Begin the visible five-second countdown only after a measured departure dwell/grace interval; cancel immediately on near evidence or health loss.
 - Use bounded scan duty cycles and event-driven manager callbacks; avoid tight polling. Expose scan cadence and energy impact in diagnostics. The exact low-power schedule must be measured because reduced scanning trades responsiveness for battery use.
 - When signal is absent or Bluetooth is interrupted, show “monitoring unavailable”; do not start or finish countdown while `UNKNOWN`.
-- On countdown completion, issue one idempotent lock request. On return, request display wake; if auto-unlock is enabled, attempt Keychain-backed credential entry only into the verified lock UI.
+- On countdown completion, the policy requests the experimentally verified private-API screen lock when enabled. On return, it can request display wake; it does not unlock.
 
 ## Excluding other Bluetooth devices
 
@@ -155,20 +165,20 @@ Mark evidence stale after a configurable age based on measured advertisement cad
 2. CoreBluetooth scans on a power-aware schedule and reports candidate advertisements and RSSI.
 3. Classifier checks candidate consistency and ambiguity; signal processor attaches freshness and scan-health metadata.
 4. Filtered signal updates `UNKNOWN` / `NEAR` / departure grace / five-second countdown / `FAR`.
-5. Countdown completion requests a lock. Return to range requests display wake only.
+5. Countdown completion requests the experimental private-API screen lock when enabled. Return to range may request display wake only.
 6. UI reports decision/action result. Since there is no phone-side app, no cryptographic challenge or trustworthy device enrollment exists.
 
 ## Lock, wake, input and action abstraction
 
 Define an `ActionProvider` capability interface: `requestLock`, `wakeDisplay`, `requestCredentialEntry`, `notify`, `openSettings`, `noOp`, each returning supported/unsupported, request result and error. Keep policy separate so BLE code cannot directly synthesize events.
 
-- **Supported/native:** CoreBluetooth scanning, Keychain storage, Accessibility permission controls and user-driven locking are macOS capabilities. Apple Watch Auto Unlock is the native Apple path. Third-party BLE presence is not a native macOS authentication factor.
-- **Possible but fragile (BLEUnlock model):** collect the login password once, store in Keychain, then use Accessibility-authorized input to enter it at the login screen after phone proximity returns. BLEUnlock documents this exact setup, including Bluetooth, Accessibility and Keychain permissions. It avoids typing the password each return, but is simulated credential entry, can break with OS/login UI changes, needs re-entry after password changes, and cannot unlock FileVault/pre-login or every secure state. Make it a separate opt-in and clearly disclose the risk.
+- **Supported/native:** CoreBluetooth scanning and user-driven macOS authentication are available platform behaviors. Apple Watch Auto Unlock is independent macOS functionality; AuraSense cannot invoke it. Third-party BLE presence is not a native macOS authentication factor.
+- **Rejected (BLEUnlock model):** AuraSense will not collect, store, or inject the login password. Accessibility-based typing is fragile, exposes credentials to focus errors, and cannot cover FileVault/pre-login authentication.
 - **Fragile:** Accessibility keystrokes for lock shortcuts, UI scripting, and undocumented session commands. Validate per macOS release. Display wake can be requested; external monitor behavior follows system/hardware power state and cannot be independently guaranteed.
 - **Unsafe:** storing credentials outside Keychain; logging/exposing credentials; disabling login protections; blind/repeated typing; entering credentials unless the expected lock UI and selected peer are confirmed; treating BLE RSSI as proof of identity or distance.
 - **Restricted:** a public general-purpose API for third-party iPhone-proximity authentication is not available. BLEUnlock works around this by injecting the user's stored password; it does not use native Auto Unlock or bypass the login credential.
 
-Validate lock, wake and credential-input behavior against supported macOS versions, TCC permissions, sandboxing, notarization and distribution model. Ship a signed/notarized DMG containing a native app with no external runtime dependencies. First launch still requires user-granted Bluetooth and Accessibility permissions; the user enters the password once to enroll it in Keychain. A DMG cannot grant privacy permissions silently.
+Validate wake behavior on supported macOS versions and external-display hardware. A signed/notarized DMG and distribution configuration are not yet present. First launch still requires user-granted Bluetooth permission; a DMG cannot grant privacy permissions silently.
 
 ## Threat model
 
@@ -182,11 +192,11 @@ Validate lock, wake and credential-input behavior against supported macOS versio
 | Replay or relay | Mac-only public advertisements cannot provide challenge-response; spoof/replay and relay remain residual risks. |
 | RSSI spoofing / multipath | Hysteresis and dwell reduce accidental noise, not deliberate RF manipulation. State is convenience presence only. |
 | False FAR causes lock | Health gating, `UNKNOWN`, departure grace, visible five-second countdown, and cancel-on-return reduce nuisance locks. |
-| False NEAR triggers credential entry | Spoofed/relayed candidate may cause an attempted password entry. Require near dwell, selected-peer match, verified lock UI and strict attempt throttling; residual risk remains. |
+| False NEAR triggers an action | Spoofed/relayed candidate may request an action. The local peer UUID is not proof of ownership; automatic unlock is disabled. |
 | Presence history leaks | Avoid persistent RSSI/location logs; short diagnostic ring buffer, redacted identifiers, user-controlled export. |
-| Credential theft/action abuse | Store only in Keychain with app-specific access controls; opt-in; no logs/files; separate credential-input adapter, bounded attempts, no arbitrary shell/input from policy. |
+| Credential theft/action abuse | AuraSense does not store or inject the Mac login credential. BLE observations remain untrusted input and must not authorize OS authentication. |
 
-**Security claim:** AuraSense provides convenience proximity automation. BLE cannot prove physical distance or device identity. Auto-unlock replays the user's stored login credential through Accessibility; it is not equivalent to macOS native authentication and lowers the assurance of the lock screen.
+**Security claim:** AuraSense provides convenience proximity automation only. BLE cannot prove physical distance or device identity. AuraSense does not unlock a macOS session.
 
 ## MVP specification
 
@@ -194,10 +204,9 @@ Validate lock, wake and credential-input behavior against supported macOS versio
 - User selects a candidate iPhone from observable nearby devices; UI clearly explains that selection is not secure identity.
 - Power-aware scanning, RSSI median/EWMA, configurable experimental thresholds/dwell and stale timeout.
 - On sustained departure, show a visible five-second cancellable countdown, then request lock if monitoring is healthy and the lock adapter is verified.
-- On return, request display wake; optionally enter the enrolled credential after near dwell when the user has separately enabled auto-unlock.
-- Auto-unlock is off by default, with clear risk disclosure, setup consent, and a disable/remove-Keychain-item control. Password is enrolled once and only re-entered after it changes.
+- On return, request display wake. Automatic unlock is unsupported and will not be implemented through password injection.
 - `UNKNOWN` cancels countdown and performs no automatic action or credential entry. No hidden helpers or persistent location history.
-- Native Swift/AppKit/SwiftUI + CoreBluetooth + Security/Keychain; signed/notarized DMG; no Homebrew/Python/Node/third-party daemon runtime dependency. macOS still requires first-run Bluetooth and Accessibility permission grants.
+- Native Swift/AppKit + CoreBluetooth; no Homebrew/Python/Node/third-party daemon runtime dependency. Signing/notarization is not configured.
 - Label monitoring as best effort; do not market guaranteed continuous detection or security-grade presence.
 
 ## Test cases before implementation
@@ -208,9 +217,9 @@ Validate lock, wake and credential-input behavior against supported macOS versio
 
 **Lifecycle/platform:** iPhone screen locked/asleep; iPhone reboot; low power mode; Bluetooth off/on; Mac permission denied/revoked; Mac sleep/wake; Bluetooth radio reset; many simultaneous peripherals; macOS 26 and later on actual Mac/iPhone hardware. Measure scan energy at idle and during transitions.
 
-**Actions/security:** countdown visibly shows 5→1; return cancels at each count; health loss cancels; no lock before completion; lock request idempotent; auto-unlock off by default; Keychain denied; Accessibility denied/revoked; wrong/changed password; unexpected input focus; throttle failures; never log/write credential to disk; external display wake; FileVault/pre-login/restart states never receive simulated input.
+**Actions/security:** countdown is visible/cancellable; health loss cancels; private-API lock is experimentally verified on macOS 27.0.1 only; credential entry remains disabled; verify display wake and clamshell behavior on external display; never send credentials to locked-session or pre-login UI.
 
-**Acceptance gates:** ambiguous/no evidence yields `UNKNOWN`; brief packet loss never starts immediate countdown; unstable RSSI does not flap; countdown is visible/cancellable; monitoring loss prevents lock and credential entry; auto-unlock opt-in; Keychain-only credential; input only to verified login UI; failures throttled. Document spoofing risk.
+**Acceptance gates:** ambiguous/no evidence yields `UNKNOWN`; brief packet loss does not trigger immediate departure; unstable RSSI does not flap; countdown is visible/cancellable; monitoring loss prevents actions; lock must be verified on target OS and unlock remains unsupported. Document spoofing risk.
 
 ## Phased Implementation Roadmap and Engineering Milestones
 
@@ -249,8 +258,8 @@ The project progresses incrementally through seven disciplined phases, validatin
 ### Phase 6: Authentication & Unlock Path Research & Hardening
 - Research and validate secure unlock paths on macOS 26+.
 - Strictly prohibit plaintext password storage in preferences, files, or memory dumps.
-- Evaluate Apple Watch Auto Unlock as the primary supported standard.
-- Model BLEUnlock-style Keychain credential + Accessibility injection only as an isolated, explicitly opted-in, throttled experimental capability with clear risk disclosures.
+- Document Apple Watch Auto Unlock as an independent macOS feature, not controlled by AuraSense.
+- Keep BLEUnlock-style password storage and Accessibility injection rejected.
 
 ### Phase 7: Menu Bar UI, Lifecycle Recovery & Production Polish
 - Native macOS menu bar popover (SwiftUI/AppKit) with monochrome template icon and status dot.
@@ -262,8 +271,8 @@ The project progresses incrementally through seven disciplined phases, validatin
 ## Technical risks / decision points
 
 1. **Critical:** On macOS 26+, Mac-only CoreBluetooth may not expose stable iPhone identity or advertisements in all states; same-account Apple identity resolution is BLEUnlock-reported behavior, not an Apple contract.
-2. **Critical:** password injection weakens session security and relies on Accessibility, Keychain access and login UI behavior; cannot cover FileVault/pre-login and may fail after OS changes.
-3. **High:** BLE spoofing and RSSI uncertainty can trigger unwanted lock or credential-entry attempts. Auto-unlock must stay optional, bounded and convenience-only.
+2. **Critical:** no supported public API lets AuraSense unlock the macOS session using iPhone BLE presence.
+3. **High:** BLE spoofing and RSSI uncertainty can trigger false proximity state changes; BLE remains a convenience signal, not an authentication factor.
 4. **High:** no native third-party iPhone-proximity unlock API; BLEUnlock-style injection is a workaround, not system-supported Auto Unlock.
 5. **High:** countdown does not prevent false lock after missed advertisements; scanner health and `UNKNOWN` handling must cancel it.
 6. **Medium:** external monitor wake behavior varies by connection/interface; validate target hardware and promise only a Mac display-wake request.

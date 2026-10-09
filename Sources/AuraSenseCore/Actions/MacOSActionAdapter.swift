@@ -2,12 +2,58 @@ import Foundation
 import Darwin
 import IOKit.pwr_mgt
 
+public protocol MacOSScreenLockMechanismProtocol: Sendable {
+    var isAvailable: Bool { get }
+    var isSessionLocked: Bool { get }
+    func lockSession() throws -> Bool
+}
+
+public final class PrivateLoginFrameworkScreenLocker: MacOSScreenLockMechanismProtocol, @unchecked Sendable {
+    private typealias LockFunction = @convention(c) () -> Int32
+    private let frameworkHandle: UnsafeMutableRawPointer?
+    private let lockFunction: LockFunction?
+    private let isLockedProvider: @Sendable () -> Bool
+
+    public var isAvailable: Bool { lockFunction != nil }
+    public var isSessionLocked: Bool { isLockedProvider() }
+
+    public init(isLockedProvider: @escaping @Sendable () -> Bool = {
+        MacOSLockScreenStateDetector().currentSessionState().isScreenLocked
+    }) {
+        let frameworkPath = "/System/Library/PrivateFrameworks/login.framework/login"
+        let handle = dlopen(frameworkPath, RTLD_NOW | RTLD_LOCAL)
+        self.frameworkHandle = handle
+        self.isLockedProvider = isLockedProvider
+        if let handle, let symbol = dlsym(handle, "SACLockScreenImmediate") {
+            self.lockFunction = unsafeBitCast(symbol, to: LockFunction.self)
+        } else {
+            self.lockFunction = nil
+        }
+    }
+
+    public func lockSession() throws -> Bool {
+        guard let lockFunction else {
+            throw ActionError.executionFailed("macOS private screen-lock entry point is unavailable")
+        }
+        let status = lockFunction()
+        guard status == 0 else {
+            throw ActionError.executionFailed("SACLockScreenImmediate returned status \(status)")
+        }
+        for _ in 0..<10 {
+            if isSessionLocked { return true }
+            usleep(100_000)
+        }
+        return isSessionLocked
+    }
+}
+
 /// Native macOS Action Adapter executing supported system operations.
 /// Supports both live execution and a dryRun verification mode.
 public final class MacOSActionAdapter: ActionProviderProtocol, @unchecked Sendable {
     private let lock = NSLock()
     public var isDryRun: Bool
     public let inputSynthesizer: (any InputSynthesizerProtocol)?
+    private let screenLocker: any MacOSScreenLockMechanismProtocol
 
     private var lastLockRequestTime: Date?
     private let minimumLockInterval: TimeInterval
@@ -16,7 +62,7 @@ public final class MacOSActionAdapter: ActionProviderProtocol, @unchecked Sendab
     private let minimumWakeInterval: TimeInterval
 
     public var isLockSupported: Bool {
-        return true
+        return screenLocker.isAvailable
     }
 
     public var isWakeSupported: Bool {
@@ -31,12 +77,14 @@ public final class MacOSActionAdapter: ActionProviderProtocol, @unchecked Sendab
         isDryRun: Bool = false,
         minimumLockInterval: TimeInterval = 3.0,
         minimumWakeInterval: TimeInterval = 3.0,
-        inputSynthesizer: (any InputSynthesizerProtocol)? = nil
+        inputSynthesizer: (any InputSynthesizerProtocol)? = nil,
+        screenLocker: any MacOSScreenLockMechanismProtocol = PrivateLoginFrameworkScreenLocker()
     ) {
         self.isDryRun = isDryRun
         self.minimumLockInterval = minimumLockInterval
         self.minimumWakeInterval = minimumWakeInterval
         self.inputSynthesizer = inputSynthesizer ?? MacOSInputSynthesizer(isDryRun: isDryRun)
+        self.screenLocker = screenLocker
     }
 
     private func checkLockThrottleAndRecord() -> Bool {
@@ -86,10 +134,21 @@ public final class MacOSActionAdapter: ActionProviderProtocol, @unchecked Sendab
             return .executed(.requestLock, details: "Dry-run mode: Screen lock simulated without invoking OS API")
         }
 
-        // Live lock mode: Public documented macOS API for session locking is not provided by Apple
-        // without private framework symbols or synthetic keystrokes.
-        // Per fixes.md, report lock as unsupported and keep live lock disabled.
-        throw ActionError.actionDisabled("Live lock is disabled: public documented macOS session lock API is unavailable without private framework symbols. Dry-run mode remains active.")
+        guard screenLocker.isAvailable else {
+            return .unsupported(.requestLock, reason: "The macOS screen-lock mechanism is unavailable on this system.")
+        }
+        if screenLocker.isSessionLocked {
+            return .executed(.requestLock, details: "Session was already locked")
+        }
+
+        do {
+            guard try screenLocker.lockSession() else {
+                throw ActionError.executionFailed("Lock request returned success but macOS did not report a locked session")
+            }
+            return .executed(.requestLock, details: "macOS session lock was requested and verified")
+        } catch {
+            throw ActionError.executionFailed("macOS session lock failed: \(error.localizedDescription)")
+        }
     }
 
     public func wakeDisplay() async throws -> ActionResult {

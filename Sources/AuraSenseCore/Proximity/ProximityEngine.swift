@@ -32,6 +32,12 @@ public final class ProximityEngine: @unchecked Sendable {
         return _state
     }
 
+    public var isReadyForEvaluation: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return isScannerHealthy && hasCandidate
+    }
+
     public static func isValidRSSI(_ rssi: Int) -> Bool {
         return rssi >= -120 && rssi <= 0
     }
@@ -54,9 +60,7 @@ public final class ProximityEngine: @unchecked Sendable {
             cancelCountdownUnderLock(reason: "Monitoring unhealthy: \(reason)")
             transitionUnderLock(to: .unknown(reason: reason), reason: reason, callbacks: &callbacks)
             filter.reset()
-            nearDwellStartTime = nil
-            farDwellStartTime = nil
-            farObservationCount = 0
+            resetObservationTimingUnderLock()
         }
 
         lock.unlock()
@@ -73,10 +77,7 @@ public final class ProximityEngine: @unchecked Sendable {
             cancelCountdownUnderLock(reason: "Candidate removed")
             transitionUnderLock(to: .unknown(reason: "No candidate registered"), reason: "No candidate registered", callbacks: &callbacks)
             filter.reset()
-            nearDwellStartTime = nil
-            farDwellStartTime = nil
-            farObservationCount = 0
-            lastAdmittedSampleTime = nil
+            resetObservationTimingUnderLock()
         }
 
         lock.unlock()
@@ -96,6 +97,11 @@ public final class ProximityEngine: @unchecked Sendable {
         var callbacks: [() -> Void] = []
 
         guard isScannerHealthy, hasCandidate else {
+            lock.unlock()
+            return
+        }
+
+        if let lastSample = lastAdmittedSampleTime, timestamp <= lastSample {
             lock.unlock()
             return
         }
@@ -121,6 +127,9 @@ public final class ProximityEngine: @unchecked Sendable {
         var callbacks: [() -> Void] = []
 
         guard isScannerHealthy, hasCandidate else {
+            cancelCountdownUnderLock(reason: "Monitoring unavailable")
+            filter.reset()
+            resetObservationTimingUnderLock()
             if !_state.isUnknown {
                 transitionUnderLock(to: .unknown(reason: "Monitoring unavailable"), reason: "Monitoring unavailable", callbacks: &callbacks)
             }
@@ -305,7 +314,11 @@ public final class ProximityEngine: @unchecked Sendable {
             return
         }
 
-        // 4. Hysteresis dead band (between farGateRSSI and nearGateRSSI):
+        // 4. Hysteresis dead band (between farGateRSSI and nearGateRSSI).
+        // Departure dwell is continuous evidence below the far gate, not accumulated
+        // across dead-band observations.
+        farDwellStartTime = nil
+        farObservationCount = 0
         nearDwellStartTime = nil
     }
 
@@ -314,6 +327,7 @@ public final class ProximityEngine: @unchecked Sendable {
         reason: String = "Departure dwell met; initiating 5-second cancellable countdown",
         callbacks: inout [() -> Void]
     ) {
+        guard isScannerHealthy, hasCandidate, _state.isNear else { return }
         countdownStartTime = timestamp
         lastCountdownSecondEmitted = config.countdownDuration
         let initialSeconds = config.countdownDuration
@@ -332,6 +346,13 @@ public final class ProximityEngine: @unchecked Sendable {
         lastCountdownSecondEmitted = nil
         farDwellStartTime = nil
         farObservationCount = 0
+    }
+
+    private func resetObservationTimingUnderLock() {
+        nearDwellStartTime = nil
+        farDwellStartTime = nil
+        farObservationCount = 0
+        lastAdmittedSampleTime = nil
     }
 
     private func transitionUnderLock(

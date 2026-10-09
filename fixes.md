@@ -1,6 +1,6 @@
 # AuraSense Implementation Fix Plan
 
-This plan re-evaluates the current VULNERABILITIES.md (findings 1–20) against the working tree. Some original mitigations are now present, but should be considered unverified until their regression tests pass. Focus first on unresolved action-execution races. Keep live locking disabled until the release gates pass.
+This status compares findings 1–20 in VULNERABILITIES.md with the current source and tests. Live locking uses an experimental private macOS API; repository tests do not replace physical-device validation.
 
 ## Safety constraints
 
@@ -14,36 +14,32 @@ This plan re-evaluates the current VULNERABILITIES.md (findings 1–20) against 
 
 | Finding | Current assessment | Required follow-up |
 |---|---|---|
-| 1 delayed action after state change | Partially mitigated: generation validation and ActionExecutor exist; serialization and side-effect boundary are still flawed (see 12–15). | Complete action executor/policy fixes and test in-flight races. |
-| 2 candidate removal leaves stale state | Appears addressed by DiagnosticsManager.unregisterCandidate; CLI path now calls it. | Keep regression test covering NEAR and COUNTDOWN removal. |
-| 3 stale peers block identity | Active-only classification and health recomputation appear added. | Stale records still need scheduled purge (18); test ambiguity recovery. |
-| 4 invalid/single RSSI affects timing | RSSI validity and far-observation tracking appear added. | Verify invalid, one-sample, silence, and timeout boundaries with tests. |
-| 5 rejected actions counted as success | Outcome-specific telemetry appears added. | In-flight reservation is still missing (15); verify retry and counters. |
-| 6 duplicate BLE processing | Blocked-device logging is rate-limited, but duplicates remain enabled and selected-peer samples still fan through the pipeline. | Coalesce noncandidate work while preserving required RSSI cadence (16). |
-| 7 scan/recovery ownership | Explicit stopScan() and monitoring intent appear added. | Unauthorized start can leave intent set (17); keep one scan owner and test recovery. |
-| 8 candidate-store errors | Force unwrap and silent decode behavior appear replaced with explicit load errors. | Verify initialization errors reach UI/diagnostics and fail closed. |
-| 9 vault reports false import | Pending-import and throwing save/reset paths appear added. | loadMetadata() still silently ignores read/decode errors; report/recover explicitly. Vault stores metadata only; do not claim secret import/encryption is implemented. |
-| 10 callbacks under proximity lock | Callbacks appear captured and invoked after unlock. | Verify callback ordering/reentrancy tests pass. |
-| 11 idle tick work | Tick callback now skips engine work when unavailable. | The repeating 0.5-second timer still wakes continuously; pause it or replace with event/timer scheduling. |
-| 12 executor not serialized | OPEN, Critical. executionLock is declared but not used. | Implement true async serialization/reservation; never lock across await. |
-| 13 near transition invalidates its own token | OPEN, Critical. Transition code advances generation then separately invalidates on NEAR/UNKNOWN. | Invalidate old actions once, then issue the current transition token; NEAR wake must remain valid. |
-| 14 no validation at OS side effect | OPEN, High. Protocol default checks before calling legacy method; MacOSActionAdapter does not override it. | Validate inside the concrete adapter immediately before irreversible calls; no post-check-as-cancellation. |
-| 15 policy latch races | OPEN, High. Lock/wake latch is recorded after async result, allowing concurrent admission. | Reserve in-flight action before suspension; settle reservation on result; use one admission owner. |
-| 16 duplicate discoveries uncoalesced | OPEN, High. Duplicates enabled and candidate observations still process each callback. | Per-peer coalescing/rate limits and bounded diagnostics; preserve candidate RSSI timing. |
-| 17 unauthorized scan leaves requested | OPEN, Medium. startScanning sets monitoring intent before authorization and may throw. | Validate authorization/state first; clear request on every failure. Do not auto-start after denied attempt. |
-| 18 peripheral registry grows | OPEN, Medium. purgeStalePeripherals exists but no scheduled caller was found. | Invoke from one bounded maintenance path; retain only data needed for candidate/UI diagnostics. |
-| 19 lifecycle races timer | OPEN, Medium. Timer and lifecycle callbacks can overlap; invalidate/cancel before ticking or dispatching actions. | Order lifecycle invalidation first, force UNKNOWN/cancel countdown, require fresh evidence after recovery. |
-| 20 unstructured task accumulation | OPEN, Low. Each transition still creates a Task. | Keep a bounded actor-owned task/queue; cancel or supersede obsolete pending work. |
+| 1 delayed action after state change | Implemented: generation validation, pre-effect checks, serialized actions, and lifecycle invalidation. | Unit tests pass; physical OS actions remain unverified. |
+| 2 candidate removal leaves stale state | Implemented: unregister resets state, filter, policy, and pending dispatch. | NEAR/COUNTDOWN removal tests pass. |
+| 3 stale peers block identity | Implemented: ambiguity checks use active peers and periodic cleanup removes stale records. | Ambiguity recovery and registry purge tests pass. |
+| 4 invalid/single RSSI affects timing | Implemented: invalid and out-of-order samples are rejected; departure requires dwell and absence policy. | RSSI and absence tests pass. |
+| 5 rejected and unsupported actions counted as successful | Implemented: outcome-specific counters and retryable reservation settlement. | Retry and concurrent transition tests pass. |
+| 6 duplicate BLE discoveries cause unnecessary work | Implemented for non-candidates; candidate samples preserve RSSI cadence. | Burst test passes; hardware energy is unmeasured. |
+| 7 scanner state and recovery ownership | Implemented: authorization checked, denied intent cleared, not-determined scan can initiate consent. | Mock tests pass; real permission flow needs hardware verification. |
+| 8 trust-store filesystem and corruption errors | Implemented: load/write/directory errors are recorded and load errors enter diagnostics. | Corrupt-store and write-failure tests pass. |
+| 9 credential-vault status can claim import success | Password secrets now use Keychain user-presence access control; only metadata is written to JSON. Password payload mapping is implemented, but source-app handoff/extension packaging and passkeys remain incomplete. | In-memory storage and import-mapping tests pass; real Keychain and system exchange still need macOS app/hardware validation. |
+| 10 callbacks execute while proximity lock is held | Implemented: callbacks run outside the proximity lock. | Reentrant callback test passes. |
+| 11 background tick timer wakes continuously when idle | Implemented: proximity timer is created only while scanner health and candidate availability allow evaluation; sleep stops it and recovery resumes it. | Readiness-driven scheduling is covered by lifecycle wiring; verify energy use on hardware. |
+| 12 executor not serialized | Implemented: actor permit serializes effects and keeps only the newest waiter. | Serialization and bounded-queue tests pass. |
+| 13 near transition invalidates its own token | Implemented: transition callback advances generation once, then dispatches using that generation. | Lifecycle and action invalidation tests pass. |
+| 14 no validation at OS side effect | Implemented: concrete adapter validates before live effects; completed effects retain executed status. | Pre-effect and post-effect status tests pass. |
+| 15 policy latch races | Implemented: lock/wake latches reserve synchronously before awaiting the provider. | Concurrent departure and retry tests pass. |
+| 16 duplicate discoveries uncoalesced | Implemented for non-candidates; selected candidate observations retain full cadence. | Burst/coalescing test passes; radio energy is not measured. |
+| 17 unauthorized scan leaves requested | Implemented: denied starts clear intent; not-determined authorization may trigger CoreBluetooth consent. | Mock denial test passes; physical permission flow unverified. |
+| 18 peripheral registry grows | Implemented: scheduled purge prunes stale peers and tracking maps even without a candidate. | Registry purge test passes. |
+| 19 lifecycle races timer | Implemented: sleep, radio failure, candidate loss, and scan errors invalidate pending work. | Lifecycle tests pass; hardware/system timing remains unverified. |
+| 20 unstructured task accumulation | Implemented: one dispatch task is tracked and only the newest pending action is retained. | Rapid-flapping and bounded-queue tests pass. |
 
 ## Critical action pipeline
 
-1. Replace the unused executionLock approach with a real async actor/queue or equivalent permit that reserves an action before suspension and guarantees at most one lock/wake admission at a time.
-2. For each transition, invalidate prior generation once, then create the token for that transition. Do not invalidate the token being used for a valid NEAR wake.
-3. Make policy admission atomic: reserve lock/wake state before awaiting the provider. Commit only on executed; clear or retain reservation according to explicit rejected/unsupported/error retry policy.
-4. Revalidate generation, current state, candidate availability, radio/authorization health, and user policy immediately before the concrete adapter performs an irreversible OS call. The concrete adapter must implement the validating overload; a protocol extension that checks then awaits a legacy method is insufficient.
-5. Keep pending work bounded/cancellable. State change, candidate removal, radio failure, sleep, or ambiguity invalidates queued work. Document that an OS side effect already issued cannot be undone.
+The action pipeline now advances generation once per state transition, validates pending work against the live proximity state, serializes execution through an actor permit, and retains only the newest queued transition. Policy latches reserve lock/wake actions before awaiting providers. The macOS adapter validates before side effects. An effect already issued cannot be undone, so its completed result remains `executed` if state changes afterward.
 
-Required tests: two simultaneous FAR requests call the provider once; valid NEAR causes one wake; the NEAR token is not self-invalidated; generation/state change while queued prevents dispatch; invalidation at the concrete adapter's pre-side-effect gate prevents the side effect; rapid state flapping does not grow pending tasks.
+Regression coverage includes concurrent serialization, bounded pending work, stale-action rejection, concurrent lock admission, and lifecycle invalidation. Live session locking remains unsupported and is never treated as a successful effect.
 
 ## Lifecycle, signal, and resource fixes
 
@@ -59,14 +55,14 @@ Required tests: candidate removal in NEAR/COUNTDOWN; same-name ambiguity resolvi
 
 ## Persistence and vault status
 
-- Candidate trust-store read/decode/directory errors must remain distinguishable from a genuinely empty store; fail closed and surface a recoverable diagnostic.
+- Candidate trust-store read/decode/directory errors are distinguishable from an empty store; initialization errors fail closed and are recorded in diagnostics.
 - LocalCredentialVault may report imported only after a real system-mediated import completes. Cancellation/failure remains pending or returns to uninitialized.
-- Surface loadMetadata() corruption and read failures. Keep all secret material out of JSON metadata, logs, diagnostics, and candidate persistence. Do not claim the current metadata-only vault securely imports/stores passwords or passkeys.
-- Test inaccessible paths, corrupt files, write/reset failures, import cancellation, and false-success prevention.
+- `LocalCredentialVault` stores password secrets in Keychain with device-only, user-presence protection and keeps only metadata in JSON. The Apple exchange payload mapper handles basic password items; passkeys are skipped. The credential-provider extension/activity handoff is missing from the current app bundle, so end-to-end import is not wired.
+- Password import mapping and secret/metadata separation have regression tests using an in-memory secret-store fake. Actual Keychain prompt behavior and app-to-app credential exchange require macOS UI/hardware testing.
 
 ## Additional security blocker: lock implementation
 
-Current MacOSActionAdapter dynamically loads private SACLockScreenImmediate and has a display-sleep fallback. Private framework symbols are unsupported and can break or fail distribution review; display sleep is not equivalent to locking the session. Before live lock mode, replace this with a validated public/documented macOS mechanism. If none is suitable for the distribution model, report lock as unsupported and keep live lock disabled. Distinguish session locked from display asleep; never count sleep as a successful lock.
+Screen locking now dynamically resolves `SACLockScreenImmediate` from private `login.framework` and verifies the session state afterward. On the current M4/macOS 27.0.1 host the symbol resolved, returned success, and the session detector observed the locked state. The API is undocumented and unsupported by Apple; this does not establish future compatibility. Automated tests inject a fake to avoid locking the test host. No proximity-driven physical-iPhone end-to-end test has been performed.
 
 ## UI polish and existing icon
 
@@ -82,12 +78,21 @@ UI tests: state/accessibility labels; countdown/cancel visibility; no misleading
 
 ## Build and release alignment
 
-Package.swift now declares macOS 26, resolving the earlier v14 mismatch. Verify scripts/build_app.sh, app bundle metadata, and final DMG use the same minimum, include app icon and template glyph, and require no runtime package-manager install. Keep Bluetooth/Accessibility permissions explicit and dry-run/live behavior clearly separated.
+Package.swift and the generated app bundle target macOS 26. The package builds without third-party runtime dependencies. No signing, notarization, entitlements file, or Xcode project is present; `scripts/build_dmg.sh` currently uses ad-hoc signing and is not a release-ready notarized distribution.
 
-## Release gates
+## Remaining work
 
-1. Add/update focused regression tests for every Critical and High finding; run focused and full existing suites and report exact results.
-2. Keep live locking disabled until serialization, generation semantics, concrete pre-side-effect validation, lifecycle tests, and a public lock mechanism are reviewed.
-3. Verify all 20 findings have a passing test or documented non-applicability; code presence alone is not completion.
-4. Confirm no credential/password injection, private credential handling, or secret logging was introduced.
-5. Report changed files, test results, platform-validation limits, and remaining risks.
+- Validate CoreBluetooth permission flow, RSSI thresholds, clamshell operation, and display-wake behavior on the target Mac and iPhone.
+- Keep unlock and password injection disabled; no supported public general-purpose proximity-unlock API is available.
+- Treat private screen lock as experimental and revalidate after OS updates; symbol availability is not a stable platform contract.
+- Add signing and notarization only when release distribution is in scope.
+
+## Follow-up review: proximity and lifecycle findings
+
+- Countdown entry is now guarded by `NEAR`, an enrolled candidate, and healthy scanning. Existing `ActionExecutor` generation validation rejects queued actions made stale by later state or lifecycle transitions.
+- Candidate removal already forced `UNKNOWN`, cancelled countdowns, reset the signal filter and cleared dwell/sample timestamps; follow-up regression coverage remains in `CandidateLifecycleTests`.
+- RSSI accepts weak values to preserve long-range departure sensing; an arbitrary `-80 dBm` floor would suppress legitimate far observations. Invalid sentinel/out-of-range values are rejected, and the median/EWMA plus multi-sample dwell prevents a lone weak sample from causing a lock. Departure dwell now resets on dead-band observations so its evidence must be continuous.
+- CoreBluetooth authorization loss now clears scan intent and stops any active scan in the radio-state callback. The denied-start path already cleared intent. Mock tests verify no automatic restart after authorization loss; native permission revocation still needs hardware/UI validation.
+- Credential exchange returns a completed `ASExportedCredentialData` payload before `importPasswords` runs. That synchronous method reports imported count only after all secrets are written and metadata is atomically persisted; failures roll back metadata and remove newly written secrets. It is not an asynchronous exchange launcher.
+- Proximity callbacks are already accumulated under lock and invoked only after unlocking; regression tests re-enter engine getters from all callback types.
+- `tick` already gates work on healthy scanning and candidate presence. It now also clears timers/filter/evidence and transitions to `UNKNOWN` if called after availability has gone stale.

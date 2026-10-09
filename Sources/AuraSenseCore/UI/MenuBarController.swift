@@ -1,72 +1,61 @@
 import Foundation
 import AppKit
 
-/// Menu bar controller managing the native macOS status item, compact icon mark,
-/// hierarchical menu, cancellable countdowns, and user preference toggles.
+/// Menu bar controller managing the native status popover and proximity actions.
 @MainActor
-public final class MenuBarController: NSObject, NSMenuDelegate {
+public final class MenuBarController: NSObject {
     public let statusItem: NSStatusItem
     public let diagnostics: DiagnosticsManager
     public let settingsStore: any SettingsStoreProtocol
     public let launchAtLoginManager: any LaunchAtLoginProtocol
+    private let scanner: (any BLEScannerProtocol)?
 
-    private var statusMenuItem: NSMenuItem?
-    private var reasonMenuItem: NSMenuItem?
-    private var candidateMenuItem: NSMenuItem?
-    private var verificationMenuItem: NSMenuItem?
-    private var cancelCountdownMenuItem: NSMenuItem?
-    private var autoLockMenuItem: NSMenuItem?
-    private var autoWakeMenuItem: NSMenuItem?
-    private var launchLoginMenuItem: NSMenuItem?
+    public let popover = NSPopover()
+    private let popoverController: AuraSenseStatusPopoverViewController
+    private var setupWindowController: DeviceSetupWindowController?
+    private var dashboardWindowController: AuraSenseDashboardWindowController?
 
     public init(
         diagnostics: DiagnosticsManager,
+        scanner: (any BLEScannerProtocol)? = nil,
         settingsStore: any SettingsStoreProtocol = FileSettingsStore(),
         launchAtLoginManager: any LaunchAtLoginProtocol = SMAppServiceLaunchAtLoginManager()
     ) {
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.diagnostics = diagnostics
+        self.scanner = scanner
         self.settingsStore = settingsStore
         self.launchAtLoginManager = launchAtLoginManager
+        self.popoverController = AuraSenseStatusPopoverViewController()
         super.init()
 
         setupStatusItem()
-        setupMenu()
+        setupPopover()
         bindDiagnostics()
         updateStatus(state: diagnostics.proximityEngine.currentState)
     }
 
-    /// Creates a monochrome vector template icon derived from the radio wave motif.
+    /// Creates a compact phone-and-lock mark that reads as device security, not Wi-Fi.
     public static func createMenuBarTemplateImage() -> NSImage {
         let size = NSSize(width: 18, height: 18)
         let image = NSImage(size: size, flipped: false) { rect in
-            let center = NSPoint(x: 9, y: 3)
-            let strokeColor = NSColor.black
-            strokeColor.setStroke()
+            NSColor.black.setStroke()
+            NSColor.black.setFill()
 
-            // Transmitter base point
-            let dotRect = NSRect(x: 7.5, y: 2, width: 3, height: 3)
-            let dot = NSBezierPath(ovalIn: dotRect)
-            strokeColor.setFill()
-            dot.fill()
+            let phone = NSBezierPath(roundedRect: NSRect(x: 2, y: 1, width: 10, height: 16), xRadius: 2, yRadius: 2)
+            phone.lineWidth = 1.35
+            phone.stroke()
+            NSBezierPath(roundedRect: NSRect(x: 5, y: 14.4, width: 4, height: 0.7), xRadius: 0.35, yRadius: 0.35).fill()
+            NSBezierPath(ovalIn: NSRect(x: 6.2, y: 2.3, width: 1.6, height: 1.6)).fill()
 
-            // Inner radio wave arc
-            let arc1 = NSBezierPath()
-            arc1.lineWidth = 1.3
-            arc1.appendArc(withCenter: center, radius: 5.5, startAngle: 35, endAngle: 145)
-            arc1.stroke()
-
-            // Mid radio wave arc
-            let arc2 = NSBezierPath()
-            arc2.lineWidth = 1.3
-            arc2.appendArc(withCenter: center, radius: 9.5, startAngle: 40, endAngle: 140)
-            arc2.stroke()
-
-            // Outer radio wave arc
-            let arc3 = NSBezierPath()
-            arc3.lineWidth = 1.3
-            arc3.appendArc(withCenter: center, radius: 13.5, startAngle: 45, endAngle: 135)
-            arc3.stroke()
+            let lockBody = NSBezierPath(roundedRect: NSRect(x: 10, y: 2, width: 7, height: 6), xRadius: 1.2, yRadius: 1.2)
+            lockBody.fill()
+            let shackle = NSBezierPath()
+            shackle.lineWidth = 1.25
+            shackle.appendArc(withCenter: NSPoint(x: 13.5, y: 8), radius: 2.15, startAngle: 0, endAngle: 180)
+            shackle.stroke()
+            NSColor.white.setFill()
+            NSBezierPath(ovalIn: NSRect(x: 13, y: 4.5, width: 1, height: 1)).fill()
 
             return true
         }
@@ -78,106 +67,99 @@ public final class MenuBarController: NSObject, NSMenuDelegate {
         guard let button = statusItem.button else { return }
         button.image = Self.createMenuBarTemplateImage()
         button.imagePosition = .imageLeading
-        button.title = "" // Icon-first and compact by default
-        button.toolTip = "AuraSense Proximity Agent"
+        button.title = ""
+        button.toolTip = "AuraSense — iPhone proximity and screen lock"
+        button.target = self
+        button.action = #selector(togglePopover)
     }
 
-    public func setupMenu() {
-        let menu = NSMenu()
-        menu.delegate = self
+    private func setupPopover() {
+        popover.behavior = .transient
+        popover.animates = true
+        popover.contentSize = NSSize(width: 340, height: 470)
+        popover.contentViewController = popoverController
+        popoverController.onSetupPhone = { [weak self] in self?.openDeviceSetup() }
+        popoverController.onToggleAutoLock = { [weak self] _ in self?.toggleAutoLock() }
+        popoverController.onToggleAutoWake = { [weak self] _ in self?.toggleAutoWake() }
+        popoverController.onToggleLaunchAtLogin = { [weak self] _ in self?.toggleLaunchAtLogin() }
+        popoverController.onLockNow = { [weak self] in self?.handleLockNow() }
+        popoverController.onCancelCountdown = { [weak self] in self?.handleCancelCountdown() }
+        popoverController.onCopyDiagnostics = { [weak self] in self?.handleCopyDiagnostics() }
+        popoverController.onOpenDashboard = { [weak self] in self?.showDashboard() }
+        popoverController.onQuit = { [weak self] in self?.handleQuit() }
+    }
 
-        // 1. Proximity State Header
-        let status = NSMenuItem(title: "Status: UNKNOWN", action: nil, keyEquivalent: "")
-        status.isEnabled = false
-        menu.addItem(status)
-        self.statusMenuItem = status
+    @objc private func togglePopover() {
+        showPopover()
+    }
 
-        let reason = NSMenuItem(title: "Reason: Initializing", action: nil, keyEquivalent: "")
-        reason.isEnabled = false
-        reason.isHidden = true
-        menu.addItem(reason)
-        self.reasonMenuItem = reason
+    public func showPopover() {
+        guard let button = statusItem.button else { return }
+        if popover.isShown {
+            popover.performClose(nil)
+        } else {
+            refreshPopover()
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        }
+    }
 
-        // 2. Candidate Information & Security Boundaries
-        let candidate = NSMenuItem(title: "Candidate: None enrolled", action: nil, keyEquivalent: "")
-        candidate.isEnabled = false
-        menu.addItem(candidate)
-        self.candidateMenuItem = candidate
+    public func presentDeviceSetup() {
+        openDeviceSetup()
+    }
 
-        let verification = NSMenuItem(title: "Security: Local UUID match (Not cryptographically verified)", action: nil, keyEquivalent: "")
-        verification.isEnabled = false
-        menu.addItem(verification)
-        self.verificationMenuItem = verification
+    public func showDashboard() {
+        guard let scanner else {
+            diagnostics.log(level: .error, category: "UI", message: "Cannot open dashboard without an active Bluetooth scanner")
+            return
+        }
+        if dashboardWindowController == nil {
+            dashboardWindowController = AuraSenseDashboardWindowController(
+                diagnostics: diagnostics,
+                scanner: scanner,
+                settingsStore: settingsStore,
+                launchAtLoginManager: launchAtLoginManager,
+                onSetupPhone: { [weak self] in self?.openDeviceSetup() },
+                onClose: { NSApp.setActivationPolicy(.accessory) }
+            )
+        }
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        dashboardWindowController?.showWindow(nil)
+        dashboardWindowController?.window?.makeKeyAndOrderFront(nil)
+    }
 
-        menu.addItem(NSMenuItem.separator())
-
-        // 3. Prominent Cancellable Departure Countdown Action
-        let cancelCountdown = NSMenuItem(
-            title: "Cancel Departure Countdown (I'm Here)",
-            action: #selector(handleCancelCountdown),
-            keyEquivalent: "c"
-        )
-        cancelCountdown.target = self
-        cancelCountdown.isHidden = true
-        menu.addItem(cancelCountdown)
-        self.cancelCountdownMenuItem = cancelCountdown
-
-        // 4. User Preference Toggles
+    private func refreshPopover() {
+        let candidate = diagnostics.trustStore.registeredCandidate
+        let recentRSSI = candidate.flatMap { selected in
+            diagnostics.registry.peripheral(for: selected.id).flatMap { peripheral in
+                Date().timeIntervalSince(peripheral.lastSeen) <= 15 ? peripheral.latestRSSI : nil
+            }
+        }
         let settings = settingsStore.currentSettings
-
-        let autoLock = NSMenuItem(
-            title: "Auto-Lock on Departure",
-            action: #selector(toggleAutoLock),
-            keyEquivalent: "l"
+        popoverController.update(
+            state: diagnostics.proximityEngine.currentState,
+            candidate: candidate,
+            rssi: recentRSSI,
+            autoLock: settings.isAutoLockEnabled,
+            autoWake: settings.isAutoWakeEnabled,
+            launchAtLogin: launchAtLoginManager.isEnabled,
+            canLock: diagnostics.policyEngine.actionProvider.isLockSupported
         )
-        autoLock.target = self
-        autoLock.state = settings.isAutoLockEnabled ? .on : .off
-        menu.addItem(autoLock)
-        self.autoLockMenuItem = autoLock
+        dashboardWindowController?.refresh()
+    }
 
-        let autoWake = NSMenuItem(
-            title: "Auto-Wake Display on Return",
-            action: #selector(toggleAutoWake),
-            keyEquivalent: "w"
-        )
-        autoWake.target = self
-        autoWake.state = settings.isAutoWakeEnabled ? .on : .off
-        menu.addItem(autoWake)
-        self.autoWakeMenuItem = autoWake
-
-        let launchLogin = NSMenuItem(
-            title: "Launch at Login",
-            action: #selector(toggleLaunchAtLogin),
-            keyEquivalent: ""
-        )
-        launchLogin.target = self
-        launchLogin.state = launchAtLoginManager.isEnabled ? .on : .off
-        menu.addItem(launchLogin)
-        self.launchLoginMenuItem = launchLogin
-
-        menu.addItem(NSMenuItem.separator())
-
-        // 5. System Quick Actions
-        let lockNow = NSMenuItem(title: "Lock Screen Now", action: #selector(handleLockNow), keyEquivalent: "")
-        lockNow.target = self
-        menu.addItem(lockNow)
-
-        let wakeNow = NSMenuItem(title: "Wake Display Now", action: #selector(handleWakeNow), keyEquivalent: "")
-        wakeNow.target = self
-        menu.addItem(wakeNow)
-
-        let copyDiag = NSMenuItem(title: "Copy Diagnostics Report", action: #selector(handleCopyDiagnostics), keyEquivalent: "d")
-        copyDiag.target = self
-        menu.addItem(copyDiag)
-
-        menu.addItem(NSMenuItem.separator())
-
-        // 6. Application Termination
-        let quit = NSMenuItem(title: "Quit AuraSense", action: #selector(handleQuit), keyEquivalent: "q")
-        quit.target = self
-        menu.addItem(quit)
-
-        statusItem.menu = menu
+    @objc private func openDeviceSetup() {
+        if setupWindowController == nil {
+            setupWindowController = DeviceSetupWindowController(diagnostics: diagnostics, scanner: scanner) { [weak self] in
+                guard let self else { return }
+                NSApp.setActivationPolicy(.accessory)
+                self.updateStatus(state: self.diagnostics.proximityEngine.currentState)
+            }
+        }
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        setupWindowController?.showWindow(nil)
+        setupWindowController?.window?.makeKeyAndOrderFront(nil)
     }
 
     private func bindDiagnostics() {
@@ -224,28 +206,7 @@ public final class MenuBarController: NSObject, NSMenuDelegate {
             }
         }
 
-        statusMenuItem?.title = "Status: \(state.displayLabel)"
-
-        if case .unknown(let reason) = state {
-            reasonMenuItem?.isHidden = false
-            reasonMenuItem?.title = "Reason: \(reason)"
-        } else {
-            reasonMenuItem?.isHidden = true
-        }
-
-        if let candidate = diagnostics.trustStore.registeredCandidate {
-            candidateMenuItem?.title = "Candidate: \(candidate.name)"
-            verificationMenuItem?.isHidden = false
-        } else {
-            candidateMenuItem?.title = "Candidate: None enrolled (All blocked)"
-            verificationMenuItem?.isHidden = true
-        }
-
-        if state.isCountdown {
-            cancelCountdownMenuItem?.isHidden = false
-        } else {
-            cancelCountdownMenuItem?.isHidden = true
-        }
+        refreshPopover()
     }
 
     public func updateCountdown(secondsRemaining: Int) {
@@ -253,8 +214,7 @@ public final class MenuBarController: NSObject, NSMenuDelegate {
             button.title = " ⏳ \(secondsRemaining)s"
             button.setAccessibilityLabel("AuraSense: Departure Countdown, \(secondsRemaining) seconds remaining")
         }
-        cancelCountdownMenuItem?.isHidden = false
-        cancelCountdownMenuItem?.title = "Cancel Departure Countdown (\(secondsRemaining)s left)"
+        refreshPopover()
     }
 
     // MARK: - Actions
@@ -264,13 +224,22 @@ public final class MenuBarController: NSObject, NSMenuDelegate {
         updateStatus(state: diagnostics.proximityEngine.currentState)
     }
 
+    @objc private func handleForgetCandidate() {
+        do {
+            try diagnostics.unregisterCandidate()
+            updateStatus(state: diagnostics.proximityEngine.currentState)
+        } catch {
+            diagnostics.log(level: .error, category: "UI.Trust", message: "Failed to forget trusted iPhone: \(error.localizedDescription)")
+        }
+    }
+
     @objc private func toggleAutoLock() {
         do {
             var settings = settingsStore.currentSettings
             settings.isAutoLockEnabled.toggle()
             try settingsStore.save(settings: settings)
             diagnostics.policyEngine.isAutoLockEnabled = settings.isAutoLockEnabled
-            autoLockMenuItem?.state = settings.isAutoLockEnabled ? .on : .off
+            refreshPopover()
             diagnostics.log(level: .info, category: "UI.Settings", message: "Auto-Lock set to \(settings.isAutoLockEnabled)")
         } catch {
             diagnostics.log(level: .error, category: "UI.Settings", message: "Failed to persist Auto-Lock: \(error.localizedDescription)")
@@ -283,7 +252,7 @@ public final class MenuBarController: NSObject, NSMenuDelegate {
             settings.isAutoWakeEnabled.toggle()
             try settingsStore.save(settings: settings)
             diagnostics.policyEngine.isAutoWakeEnabled = settings.isAutoWakeEnabled
-            autoWakeMenuItem?.state = settings.isAutoWakeEnabled ? .on : .off
+            refreshPopover()
             diagnostics.log(level: .info, category: "UI.Settings", message: "Auto-Wake set to \(settings.isAutoWakeEnabled)")
         } catch {
             diagnostics.log(level: .error, category: "UI.Settings", message: "Failed to persist Auto-Wake: \(error.localizedDescription)")
@@ -294,7 +263,7 @@ public final class MenuBarController: NSObject, NSMenuDelegate {
         do {
             let current = launchAtLoginManager.isEnabled
             try launchAtLoginManager.setEnabled(!current)
-            launchLoginMenuItem?.state = launchAtLoginManager.isEnabled ? .on : .off
+            refreshPopover()
             diagnostics.log(level: .info, category: "UI.Settings", message: "Launch at Login set to \(launchAtLoginManager.isEnabled)")
         } catch {
             diagnostics.log(level: .error, category: "UI.Settings", message: "Failed to update Launch at Login: \(error.localizedDescription)")
@@ -303,13 +272,12 @@ public final class MenuBarController: NSObject, NSMenuDelegate {
 
     @objc private func handleLockNow() {
         Task {
-            _ = try? await diagnostics.policyEngine.actionProvider.requestLock()
-        }
-    }
-
-    @objc private func handleWakeNow() {
-        Task {
-            _ = try? await diagnostics.policyEngine.actionProvider.wakeDisplay()
+            do {
+                let result = try await diagnostics.policyEngine.actionProvider.requestLock()
+                diagnostics.log(level: .info, category: "Policy.Action", message: "Manual lock request: \(result)")
+            } catch {
+                diagnostics.log(level: .error, category: "Policy.Action", message: "Manual lock request failed: \(error.localizedDescription)")
+            }
         }
     }
 

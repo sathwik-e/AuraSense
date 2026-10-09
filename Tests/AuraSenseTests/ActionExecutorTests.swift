@@ -4,6 +4,144 @@ import Foundation
 
 struct ActionExecutorTests {
 
+    private final class ConcurrentWorkCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var active = 0
+        private var maximum = 0
+
+        func begin() {
+            lock.lock()
+            active += 1
+            maximum = max(maximum, active)
+            lock.unlock()
+        }
+
+        func end() {
+            lock.lock()
+            active -= 1
+            lock.unlock()
+        }
+
+        var maximumConcurrent: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return maximum
+        }
+    }
+
+    @Test func testExecutorSerializesConcurrentActions() async {
+        let executor = ActionExecutor()
+        let generation = executor.advanceGeneration(reason: "test")
+        let counter = ConcurrentWorkCounter()
+
+        async let first = executor.executeSerialized(
+            action: .requestLock,
+            generation: generation,
+            validate: { true },
+            perform: { _ in
+                counter.begin()
+                try? await Task.sleep(nanoseconds: 30_000_000)
+                counter.end()
+                return .executed(.requestLock, details: "first")
+            }
+        )
+        async let second = executor.executeSerialized(
+            action: .requestLock,
+            generation: generation,
+            validate: { true },
+            perform: { _ in
+                counter.begin()
+                try? await Task.sleep(nanoseconds: 30_000_000)
+                counter.end()
+                return .executed(.requestLock, details: "second")
+            }
+        )
+
+        _ = await (first, second)
+        #expect(counter.maximumConcurrent == 1)
+    }
+
+    @Test func testExecutorBoundsPendingActionsToNewestTransition() async {
+        let executor = ActionExecutor()
+        let generation = executor.advanceGeneration(reason: "test")
+        let counter = ConcurrentWorkCounter()
+
+        let first = Task {
+            await executor.executeSerialized(
+                action: .requestLock,
+                generation: generation,
+                validate: { true },
+                perform: { _ in
+                    counter.begin()
+                    try? await Task.sleep(nanoseconds: 150_000_000)
+                    counter.end()
+                    return .executed(.requestLock, details: "first")
+                }
+            )
+        }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        let second = Task {
+            await executor.executeSerialized(
+                action: .requestLock,
+                generation: generation,
+                validate: { true },
+                perform: { _ in
+                    counter.begin()
+                    counter.end()
+                    return .executed(.requestLock, details: "second")
+                }
+            )
+        }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        let third = Task {
+            await executor.executeSerialized(
+                action: .wakeDisplay,
+                generation: generation,
+                validate: { true },
+                perform: { _ in
+                    counter.begin()
+                    counter.end()
+                    return .executed(.wakeDisplay, details: "third")
+                }
+            )
+        }
+
+        let secondResult = await second.value
+        if case .rejected(.requestLock, let reason) = secondResult {
+            #expect(reason.contains("superseded"))
+        } else {
+            Issue.record("Expected superseded queued action to be rejected")
+        }
+
+        _ = await first.value
+        _ = await third.value
+        #expect(counter.maximumConcurrent == 1)
+    }
+
+    @Test func testCompletedActionRemainsExecutedWhenStateChangesAfterward() async {
+        let executor = ActionExecutor()
+        let generation = executor.advanceGeneration(reason: "test")
+        let counter = ConcurrentWorkCounter()
+
+        let result = await executor.executeSerialized(
+            action: .requestLock,
+            generation: generation,
+            validate: { executor.isGenerationValid(generation) },
+            perform: { _ in
+                counter.begin()
+                executor.invalidate(reason: "transition after side effect")
+                counter.end()
+                return .executed(.requestLock, details: "side effect already issued")
+            }
+        )
+
+        if case .executed(.requestLock, _) = result {
+        } else {
+            Issue.record("A completed side effect must not be reported as rejected")
+        }
+    }
+
     @Test func testMockActionBlockedBeforeSideEffectCancelledByNearReturn() async throws {
         let mockProvider = MockActionProvider(isLockSupported: true, shouldSucceed: true)
         let policyEngine = PolicyEngine(actionProvider: mockProvider, isAutoLockEnabled: true)

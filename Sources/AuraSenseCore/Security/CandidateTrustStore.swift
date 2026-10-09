@@ -81,15 +81,23 @@ public final class PersistentCandidateTrustStore: CandidateTrustStoreProtocol, @
     public init(storageURL: URL? = nil) {
         if let customURL = storageURL {
             self.storageURL = customURL
+            self.cachedCandidate = nil
+            self._lastLoadError = nil
+            self.cachedCandidate = loadFromDisk()
         } else {
             let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
                 ?? URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("Application Support", isDirectory: true)
             let aurasenseDir = appSupport.appendingPathComponent("AuraSense", isDirectory: true)
-            try? FileManager.default.createDirectory(at: aurasenseDir, withIntermediateDirectories: true)
             self.storageURL = aurasenseDir.appendingPathComponent("trusted_candidate.json")
+            self.cachedCandidate = nil
+            self._lastLoadError = nil
+            do {
+                try FileManager.default.createDirectory(at: aurasenseDir, withIntermediateDirectories: true)
+                self.cachedCandidate = loadFromDisk()
+            } catch {
+                self._lastLoadError = .persistenceFailed("Unable to create candidate storage directory: \(error.localizedDescription)")
+            }
         }
-
-        self.cachedCandidate = loadFromDisk()
     }
 
     public var registeredCandidate: CandidateDevice? {

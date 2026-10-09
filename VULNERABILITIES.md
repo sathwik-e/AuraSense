@@ -1,9 +1,9 @@
 # AuraSense Vulnerabilities and Correctness Bugs
 
-This document lists the currently identified security, reliability, concurrency,
-Bluetooth, lifecycle, and performance defects. Fixes should be incremental and
-should preserve the existing architecture. Do not enable live locking until the
-critical and high-severity issues are resolved.
+This document is the original audit checklist for security, reliability,
+concurrency, Bluetooth, lifecycle, and performance findings. It is retained as
+historical context; consult `fixes.md` for the current implementation status.
+Live locking remains unsupported by the available public macOS APIs.
 
 ## Severity Definitions
 

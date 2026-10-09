@@ -87,6 +87,7 @@ public final class MockBLEScanner: BLEScannerProtocol, @unchecked Sendable {
         lock.lock()
         _authorizationStatus = newStatus
         if !newStatus.isAuthorized {
+            _isMonitoringRequested = false
             _isScanning = false
         }
         lock.unlock()

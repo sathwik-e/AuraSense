@@ -4,6 +4,39 @@ import Foundation
 
 struct DiagnosticsTests {
 
+    @Test func testTickReadinessTracksCandidateAndScannerHealth() throws {
+        let store = InMemoryCandidateTrustStore()
+        let diagnostics = DiagnosticsManager(trustStore: store)
+        #expect(!diagnostics.canProcessProximityTicks)
+
+        try diagnostics.registerCandidate(CandidateDevice(id: UUID(), name: "Phone"))
+        #expect(diagnostics.canProcessProximityTicks)
+
+        diagnostics.scannerDidChangeRadioState(.poweredOff)
+        #expect(!diagnostics.canProcessProximityTicks)
+
+        diagnostics.scannerDidChangeRadioState(.poweredOn)
+        #expect(diagnostics.canProcessProximityTicks)
+
+        try diagnostics.unregisterCandidate()
+        #expect(!diagnostics.canProcessProximityTicks)
+    }
+
+    @Test func testPeriodicPurgeRemovesOldRegistryEntriesWithoutCandidate() {
+        let diagnostics = DiagnosticsManager(trustStore: InMemoryCandidateTrustStore())
+        let seenAt = Date()
+        diagnostics.registry.registerOrUpdate(DiscoveredPeripheral(
+            id: UUID(),
+            latestRSSI: -60,
+            firstSeen: seenAt,
+            lastSeen: seenAt
+        ))
+
+        diagnostics.purgeStalePeriodically(referenceDate: seenAt.addingTimeInterval(61))
+
+        #expect(diagnostics.registry.count == 0)
+    }
+
     @Test func testRingBufferCap() {
         let diagnostics = DiagnosticsManager(maxEvents: 5)
         for i in 1...10 {

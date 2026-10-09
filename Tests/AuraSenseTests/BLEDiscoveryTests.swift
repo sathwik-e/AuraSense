@@ -94,6 +94,20 @@ struct BLEDiscoveryTests {
         #expect(!scanner.isMonitoringRequested)
     }
 
+    @Test func testMockScannerClearsMonitoringIntentOnAuthorizationDenial() throws {
+        let scanner = MockBLEScanner(initialRadioState: .poweredOn, initialAuthorization: .allowedAlways)
+        try scanner.startScanning()
+        #expect(scanner.isMonitoringRequested)
+        #expect(scanner.isScanning)
+
+        scanner.simulateAuthorizationChange(.denied)
+        #expect(!scanner.isMonitoringRequested)
+        #expect(!scanner.isScanning)
+        scanner.simulateRadioStateChange(.poweredOff)
+        scanner.simulateRadioStateChange(.poweredOn)
+        #expect(!scanner.isScanning)
+    }
+
     @Test func testNonCandidateDuplicateBurstIsCoalescedWhileCandidatePreserved() throws {
         // Finding 16: Coalesce rapid non-candidate duplicate bursts while preserving candidate packet cadence
         let scanner = MockBLEScanner()

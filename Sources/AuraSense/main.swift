@@ -14,6 +14,8 @@ final class AuraSenseCLI: @unchecked Sendable {
     private let launchAtLoginManager: SMAppServiceLaunchAtLoginManager
     private var isRunning: Bool = false
     private let runLoop = RunLoop.current
+    private var proximityTickTimer: Timer?
+    private var registryPurgeTimer: Timer?
 
     init(
         scanner: any BLEScannerProtocol = CoreBluetoothScanner(),
@@ -66,11 +68,13 @@ final class AuraSenseCLI: @unchecked Sendable {
         sleepWakeMonitor.onWillSleep = { [weak self] in
             self?.diagnostics.log(category: "System.Power", message: "System entering sleep. Cancelling countdown and pausing scanner.")
             self?.recoveryCoordinator.handleSystemSleep()
+            Task { @MainActor [weak self] in self?.stopProximityTickTimer() }
         }
 
         sleepWakeMonitor.onDidWake = { [weak self] in
             self?.diagnostics.log(category: "System.Power", message: "System awakened. Resetting proximity filter and resuming scanner.")
             self?.recoveryCoordinator.handleSystemWake()
+            Task { @MainActor [weak self] in self?.updateProximityTickTimer() }
         }
 
         sleepWakeMonitor.startMonitoring()
@@ -110,10 +114,17 @@ final class AuraSenseCLI: @unchecked Sendable {
         }
 
         if let candidateArg = parseCandidateArg(args: args) {
-            let candidateUUID = UUID(uuidString: candidateArg) ?? UUID()
+            guard let candidateUUID = UUID(uuidString: candidateArg) else {
+                fputs("Error: --candidate requires a previously discovered CoreBluetooth UUID. Use 'register <UUID>' to enroll it.\n", stderr)
+                return
+            }
             let candidate = CandidateDevice(id: candidateUUID, name: candidateArg)
-            try? trustStore.register(candidate: candidate)
-            diagnostics.gate.syncCandidate()
+            do {
+                try diagnostics.registerCandidate(candidate)
+            } catch {
+                fputs("Failed to register candidate: \(error.localizedDescription)\n", stderr)
+                return
+            }
         }
 
         if let adapter = diagnostics.policyEngine.actionProvider as? MacOSActionAdapter {
@@ -133,7 +144,7 @@ final class AuraSenseCLI: @unchecked Sendable {
             diagnostics.policyEngine.isAutoLockEnabled = true
             diagnostics.policyEngine.reset()
             if isLive {
-                print("Notice: LIVE system auto-lock enabled. Mac will lock upon confirmed departure.")
+                print("Notice: live departure locking is enabled. AuraSense uses an undocumented private macOS lock entry point; verify on this OS before relying on it.")
             } else {
                 print("Notice: Auto-lock policy enabled in Dry-Run mode (simulated without locking display).")
             }
@@ -178,9 +189,9 @@ final class AuraSenseCLI: @unchecked Sendable {
 
         OPTIONS:
             --name <name>          Optional friendly name for registration (e.g. "Sathwik's iPhone")
-            --candidate <name|id>  Ad-hoc track a specific candidate for this session
+            --candidate <UUID>     Register and track a discovered CoreBluetooth UUID
             --auto-lock            Enable automatic locking upon completed departure countdown (dry-run by default)
-            --live-lock            With --auto-lock: execute real macOS screen locking via SACLockScreenImmediate
+            --live-lock            Request experimental live locking (uses an undocumented private macOS API)
             --no-wake              Disable automatic display wake when returning to NEAR proximity
             --live-wake            Execute real macOS display wake via IOPMAssertion / caffeinate
             --duration <seconds>   Scan duration in seconds (for 'scan' command, default: 5)
@@ -188,9 +199,10 @@ final class AuraSenseCLI: @unchecked Sendable {
             -h, --help             Show this help message
 
         SECURITY NOTICE:
-            Phase 4/5 introduces automatic Mac locking and display wake triggered by proximity transitions.
-            Display wake and input synthesis operate in an isolated action layer.
-            Plaintext credential injection is strictly disabled. Auto-lock requires explicit opt-in (--auto-lock).
+            Live locking uses an undocumented private macOS API and can break between OS releases.
+            BLE peer identifiers and RSSI are not proof of ownership or physical distance.
+            Automatic unlocking and plaintext credential injection are disabled.
+            Plaintext credential injection is strictly disabled.
         """)
     }
 
@@ -278,15 +290,26 @@ final class AuraSenseCLI: @unchecked Sendable {
         var settings = settingsStore.currentSettings
 
         if let lockIdx = args.firstIndex(of: "--auto-lock"), lockIdx + 1 < args.count {
-            settings.isAutoLockEnabled = (args[lockIdx + 1].lowercased() == "true")
-            try? settingsStore.save(settings: settings)
-            print("Updated autoLockEnabled: \(settings.isAutoLockEnabled)")
+            let requested = args[lockIdx + 1].lowercased() == "true"
+            settings.isAutoLockEnabled = requested
+            do {
+                try settingsStore.save(settings: settings)
+                print("Updated autoLockEnabled: \(settings.isAutoLockEnabled)")
+            } catch {
+                settings = settingsStore.currentSettings
+                print("Failed to save autoLockEnabled: \(error.localizedDescription)")
+            }
         }
 
         if let wakeIdx = args.firstIndex(of: "--auto-wake"), wakeIdx + 1 < args.count {
-            settings.isAutoWakeEnabled = (args[wakeIdx + 1].lowercased() == "true")
-            try? settingsStore.save(settings: settings)
-            print("Updated autoWakeEnabled: \(settings.isAutoWakeEnabled)")
+            settings.isAutoWakeEnabled = args[wakeIdx + 1].lowercased() == "true"
+            do {
+                try settingsStore.save(settings: settings)
+                print("Updated autoWakeEnabled: \(settings.isAutoWakeEnabled)")
+            } catch {
+                settings = settingsStore.currentSettings
+                print("Failed to save autoWakeEnabled: \(error.localizedDescription)")
+            }
         }
 
         print("Current AuraSense Settings:")
@@ -329,6 +352,7 @@ final class AuraSenseCLI: @unchecked Sendable {
         let deadline = Date().addingTimeInterval(duration)
         while Date() < deadline {
             runLoop.run(until: Date(timeIntervalSinceNow: 0.1))
+            diagnostics.purgeStalePeriodically()
             diagnostics.proximityEngine.tick()
         }
 
@@ -347,24 +371,35 @@ final class AuraSenseCLI: @unchecked Sendable {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
 
+        if let adapter = diagnostics.policyEngine.actionProvider as? MacOSActionAdapter {
+            adapter.isDryRun = false
+            if let synthesizer = adapter.inputSynthesizer as? MacOSInputSynthesizer {
+                synthesizer.isDryRun = false
+            }
+        }
+
         let menuBarController = MenuBarController(
             diagnostics: diagnostics,
+            scanner: scanner,
             settingsStore: settingsStore,
             launchAtLoginManager: launchAtLoginManager
         )
+
+        observeProximityTickReadiness()
 
         do {
             try scanner.startScanning(serviceUUIDs: nil)
         } catch {
             diagnostics.log(level: .warning, category: "BLE", message: "Deferred scan start: \(error.localizedDescription)")
         }
+        diagnostics.scannerDidChangeRadioState(scanner.radioState)
 
-        _ = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            guard let self = self, self.diagnostics.canProcessProximityTicks else { return }
-            let now = Date()
-            self.diagnostics.proximityEngine.tick(currentTime: now)
-            self.diagnostics.purgeStalePeriodically(referenceDate: now)
+        if trustStore.registeredCandidate == nil {
+            menuBarController.presentDeviceSetup()
         }
+
+        scheduleRegistryPurge()
+        updateProximityTickTimer()
 
         _ = menuBarController // Retain controller
         app.run()
@@ -394,18 +429,13 @@ final class AuraSenseCLI: @unchecked Sendable {
         } catch {
             print("Warning: Initial scan start deferred: \(error.localizedDescription)")
         }
+        diagnostics.scannerDidChangeRadioState(scanner.radioState)
 
         isRunning = true
 
-        let tickTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
-            // canProcessProximityTicks gates idle wakeups (Finding 11)
-            guard self.diagnostics.canProcessProximityTicks else { return }
-            let now = Date()
-            self.diagnostics.proximityEngine.tick(currentTime: now)
-            // Opportunistic bounded registry purge without a separate timer (Finding 18)
-            self.diagnostics.purgeStalePeriodically(referenceDate: now)
-        }
+        observeProximityTickReadiness()
+        scheduleRegistryPurge()
+        updateProximityTickTimer()
 
         let heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
@@ -418,10 +448,44 @@ final class AuraSenseCLI: @unchecked Sendable {
             runLoop.run(until: Date(timeIntervalSinceNow: 0.5))
         }
 
-        tickTimer.invalidate()
+        stopProximityTickTimer()
+        registryPurgeTimer?.invalidate()
+        registryPurgeTimer = nil
         heartbeatTimer.invalidate()
         scanner.stopScanning()
         print("\nAuraSense agent stopped.")
+    }
+
+    private func observeProximityTickReadiness() {
+        diagnostics.onProximityTickReadinessChanged = { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.updateProximityTickTimer()
+            }
+        }
+    }
+
+    private func updateProximityTickTimer() {
+        guard diagnostics.canProcessProximityTicks else {
+            stopProximityTickTimer()
+            return
+        }
+        guard proximityTickTimer == nil else { return }
+        proximityTickTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            guard let self, self.diagnostics.canProcessProximityTicks else { return }
+            self.diagnostics.proximityEngine.tick()
+        }
+    }
+
+    private func stopProximityTickTimer() {
+        proximityTickTimer?.invalidate()
+        proximityTickTimer = nil
+    }
+
+    private func scheduleRegistryPurge() {
+        registryPurgeTimer?.invalidate()
+        registryPurgeTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            self?.diagnostics.purgeStalePeriodically()
+        }
     }
 
     private func setupSignalHandlers() {

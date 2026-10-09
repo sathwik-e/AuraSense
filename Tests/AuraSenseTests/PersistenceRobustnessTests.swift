@@ -21,6 +21,9 @@ struct PersistenceRobustnessTests {
         #expect(store.registeredCandidate == nil)
         #expect(store.lastLoadError == .invalidCandidateData)
 
+        let diagnostics = DiagnosticsManager(trustStore: store)
+        #expect(diagnostics.recentEvents().contains { $0.category == "Candidate.Persistence" })
+
         // Recovery path
         try store.recoverCorruptStore()
         #expect(store.registeredCandidate == nil)
@@ -71,6 +74,19 @@ struct PersistenceRobustnessTests {
         let cancelStatus = try vault.cancelImport()
         #expect(cancelStatus == .uninitialized)
         #expect(vault.status == .uninitialized)
+    }
+
+    @Test func testCorruptCredentialVaultMetadataIsReported() throws {
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vault_corrupt_\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        try Data("{invalid".utf8).write(to: tempURL)
+
+        let vault = LocalCredentialVault(fileURL: tempURL)
+
+        #expect(vault.status == .uninitialized)
+        #expect(vault.lastPersistenceError != nil)
+        #expect(vault.recordCount == 0)
     }
 
     @Test func testCredentialVaultMetadataWriteFailureProducesExplicitError() throws {

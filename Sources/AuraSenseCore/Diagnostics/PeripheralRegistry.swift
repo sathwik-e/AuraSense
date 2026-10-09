@@ -65,6 +65,7 @@ public final class PeripheralRegistry: @unchecked Sendable {
         defer { lock.unlock() }
 
         if var existing = peripherals[discovered.id] {
+            guard discovered.lastSeen > existing.lastSeen else { return }
             existing.recordReading(
                 rssi: discovered.latestRSSI,
                 timestamp: discovered.lastSeen,
@@ -82,6 +83,7 @@ public final class PeripheralRegistry: @unchecked Sendable {
         defer { lock.unlock() }
 
         if var existing = peripherals[peripheralID] {
+            guard timestamp > existing.lastSeen else { return }
             existing.recordReading(rssi: rssi, timestamp: timestamp, advertisement: nil)
             peripherals[peripheralID] = existing
         } else {
