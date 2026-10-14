@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>AuraSense</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.aurasense.mac.app</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>AuraSense</string>
+    <key>CFBundleDisplayName</key>
+    <string>AuraSense</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.2.0</string>
+    <key>CFBundleVersion</key>
+    <string>120</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <string>true</string>
+    <key>NSSupportsAutomaticTermination</key>
+    <false/>
+    <key>NSSupportsSuddenTermination</key>
+    <false/>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>AuraSense uses Bluetooth Low Energy RSSI proximity telemetry to automatically unlock your Mac when your bound device is within range and lock it when you walk away.</string>
+    <key>NSBluetoothPeripheralUsageDescription</key>
+    <string>AuraSense monitors the signal strength of your selected Bluetooth device to lock and unlock your Mac automatically.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>AuraSense uses Accessibility and system events to lock the screen when you leave, wake external monitors, and enter your Keychain password when you return.</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 AuraSense Project. All rights reserved.</string>
+</dict>
+</plist>

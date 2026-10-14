@@ -1,0 +1,41 @@
+name: Publish AuraSense 0.1 Release
+
+on:
+  push:
+    branches:
+      - main
+      - "0.1"
+    tags:
+      - "0.1"
+      - "v0.1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Package AuraSense.app bundle for GitHub Releases
+        run: |
+          chmod +x AuraSense.app/Contents/MacOS/AuraSense
+          zip -r -y AuraSense.app.zip AuraSense.app
+
+      - name: Create GitHub Release 0.1 with DMG and App Bundle
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "0.1"
+          name: "AuraSense 0.1"
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: false
+          files: |
+            AuraSense.dmg
+            releases/v0.1/AuraSense-0.1.dmg
+            AuraSense.app.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
