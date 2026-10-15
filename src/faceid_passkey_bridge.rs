@@ -9,8 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 type HmacSha256 = Hmac<Sha256>;
 
 /// Local LAN POST `/api/v1/faceid-autofill` & `/faceid` Home Screen Trigger Server.
-/// Serves a clean, unlocked webpage version on iPhone with instant POST trigger
-/// and instructions to add the POST Shortcut to the iPhone Home Screen.
+/// Automatically triggers password auto-fill the instant `/api/v1/faceid-autofill` or `/faceid`
+/// is opened in the browser (both server-side on GET/POST and client-side on page load).
 pub struct FaceIdPasskeyBridgeServer {
     pub port: u16,
 }
@@ -46,7 +46,7 @@ impl FaceIdPasskeyBridgeServer {
         let addr = format!("0.0.0.0:{}", self.port);
         let listener = TcpListener::bind(&addr)?;
         println!(
-            "[AuraSense-Rust] Prioritized POST /api/v1/faceid-autofill & /faceid server listening on http://{}",
+            "[AuraSense-Rust] Auto-Fill on Open & POST server listening on http://{}",
             addr
         );
 
@@ -92,10 +92,15 @@ impl FaceIdPasskeyBridgeServer {
                 json_body
             );
             stream.write_all(resp.as_bytes())?;
+        } else if first_line.starts_with("GET /favicon") {
+            let resp = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
+            stream.write_all(resp.as_bytes())?;
         } else {
+            // Immediately trigger password auto-fill as soon as the URL is opened in the browser
+            let _ = Self::trigger_keychain_autofill_now();
             let html = Self::mobile_unlocked_webpage_html();
             let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store, no-cache, must-revalidate\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 html.len(),
                 html
             );
@@ -124,7 +129,7 @@ impl FaceIdPasskeyBridgeServer {
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
-<title>AuraSense • Keychain Auto-Fill</title>
+<title>AuraSense • Auto-Fill Active</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -171,36 +176,37 @@ impl FaceIdPasskeyBridgeServer {
 <body>
   <div class="container">
     <div class="hero">
-      <div class="pill">INSTANT POST TRIGGER • NO WEB APP LOCK</div>
+      <div class="pill">AUTO-FILL ON PAGE OPEN ACTIVE</div>
       <h1>AuraSense Keychain Fill</h1>
-      <p class="sub">Tap below to immediately fill your Mac's active iCloud Keychain or system password prompt.</p>
-      <button class="btn-post" onclick="sendPostAutoFill()">⚡ Fill Mac Password Now (POST)</button>
-      <div id="status"></div>
+      <p class="sub">Opening this page automatically triggers POST password auto-fill on your Mac.</p>
+      <button class="btn-post" onclick="sendPostAutoFill()">Fill Mac Password Again (POST)</button>
+      <div id="status">Auto-filling Mac password now...</div>
     </div>
 
     <div class="card">
-      <h2>📲 Add POST Shortcut to iPhone Home Screen</h2>
-      <div class="code-box">POST http://192.168.1.8:8765/api/v1/faceid-autofill</div>
+      <h2>Add to iPhone Home Screen or Shortcuts</h2>
+      <div class="code-box">http://192.168.1.8:8765/api/v1/faceid-autofill</div>
       <ol>
-        <li>Open <strong>Shortcuts</strong> on your iPhone → tap <strong>+</strong> → name it <strong>"Mac Keychain Fill"</strong>.</li>
-        <li>Tap <strong>Add Action</strong> → select <strong>"Get Contents of URL"</strong>.</li>
-        <li>Set URL to <strong>http://192.168.1.8:8765/api/v1/faceid-autofill</strong>, tap <strong>(&gt;)</strong>, and set <strong>Method</strong> to <strong><code>POST</code></strong>.</li>
-        <li>Tap <strong>ⓘ (Info)</strong> or <strong>Share</strong> at the bottom → tap <strong>"Add to Home Screen"</strong> → tap <strong>Add</strong>.</li>
+        <li><strong>Zero-Tap Home Screen Icon</strong>: Tap <strong>Share</strong> in Safari and select <strong>Add to Home Screen</strong>. Opening it immediately auto-fills your Mac password.</li>
+        <li><strong>Or iOS Shortcut (POST)</strong>: In <strong>Shortcuts</strong>, add <strong>Get Contents of URL</strong> with <strong>http://192.168.1.8:8765/api/v1/faceid-autofill</strong> and set Method to <strong><code>POST</code></strong>.</li>
       </ol>
     </div>
   </div>
 <script>
 async function sendPostAutoFill() {
   const st = document.getElementById('status');
-  st.textContent = 'Sending POST to /api/v1/faceid-autofill...';
+  st.textContent = 'Auto-filling Mac password via POST...';
   try {
     const res = await fetch('/api/v1/faceid-autofill', { method: 'POST' });
     const data = await res.json();
-    st.textContent = data.ok ? ('✓ ' + data.message) : ('⚠ ' + (data.message || data.error));
+    st.textContent = data.ok ? ('Password auto-filled: ' + data.message) : (data.message || data.error);
   } catch (e) {
     st.textContent = 'Error: ' + e.message;
   }
 }
+window.addEventListener('DOMContentLoaded', () => { sendPostAutoFill(); });
+window.addEventListener('pageshow', (event) => { if (event.persisted) { sendPostAutoFill(); } });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { sendPostAutoFill(); } });
 </script>
 </body>
 </html>"#

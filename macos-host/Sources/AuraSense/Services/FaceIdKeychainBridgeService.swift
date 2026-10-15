@@ -5,9 +5,10 @@ import ApplicationServices
 import CoreGraphics
 import Network
 
-/// Prioritizes the POST `/api/v1/faceid-autofill` webhook, serves the clean unlocked iPhone webpage
-/// at `http://<ip>:8765/faceid` and `http://<ip>:8765/api/v1/faceid-autofill`, and provides
-/// step-by-step instructions for adding the POST Shortcut to the iPhone Home Screen with Shortcut App Lock.
+/// Prioritizes the POST `/api/v1/faceid-autofill` webhook and automatically triggers
+/// password auto-fill the instant `http://<ip>:8765/api/v1/faceid-autofill` or
+/// `http://<ip>:8765/faceid` is opened in the browser (both server-side on GET/POST
+/// and client-side via automatic POST on page load, pageshow, and tab focus).
 @MainActor
 public final class FaceIdKeychainBridgeService: ObservableObject {
     public static let shared = FaceIdKeychainBridgeService()
@@ -24,7 +25,7 @@ public final class FaceIdKeychainBridgeService: ObservableObject {
     @Published public private(set) var activePromptProcess: String? = nil
     @Published public private(set) var isSecureTextFieldFocused: Bool = false
     @Published public private(set) var localLanIPAddress: String = "192.168.1.8"
-    @Published public private(set) var lastBridgeEvent: String = "Ready — Prioritizing POST /api/v1/faceid-autofill"
+    @Published public private(set) var lastBridgeEvent: String = "Ready — Auto-fills immediately when opened in browser or via POST"
     @Published public private(set) var continuityFaceIdUnlocked: Bool = false
 
     private var monitorTimer: Timer?
@@ -158,8 +159,9 @@ public final class FaceIdKeychainBridgeService: ObservableObject {
             return (false, "Face ID Keychain Bridge is currently paused.")
         }
 
-        guard Date().timeIntervalSince(lastAutoFillTime) > 1.0 else {
-            return (true, "Password already filled a moment ago.")
+        // Prevent duplicate double-typing within 1.5s when both GET page load and auto-POST fire together
+        guard Date().timeIntervalSince(lastAutoFillTime) > 1.5 else {
+            return (true, "Password auto-filled into active Mac prompt.")
         }
 
         if requireDeviceInRangeForPost && !isUserDeviceCurrentlyInRange {
@@ -254,9 +256,17 @@ public final class FaceIdKeychainBridgeService: ObservableObject {
                     let json = "{\"ok\":\(ok ? "true" : "false"),\"method\":\"POST /api/v1/faceid-autofill\",\"message\":\"\(escaped)\"}"
                     let resp = "HTTP/1.1 \(ok ? "200 OK" : "400 Bad Request")\r\nContent-Type: application/json; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: \(json.utf8.count)\r\nConnection: close\r\n\r\n\(json)"
                     conn.send(content: resp.data(using: .utf8), completion: .contentProcessed { _ in conn.cancel() })
+                } else if firstLine.hasPrefix("GET /favicon") {
+                    let resp = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n"
+                    conn.send(content: resp.data(using: .utf8), completion: .contentProcessed { _ in conn.cancel() })
                 } else {
+                    // As soon as /api/v1/faceid-autofill or /faceid is opened in the browser,
+                    // trigger password auto-fill immediately on the server AND auto-fire POST from the page!
+                    Task { @MainActor in
+                        _ = await self.autoFillActiveKeychainPrompt(triggerSource: "Browser Open (/api/v1/faceid-autofill)")
+                    }
                     let html = self.renderInstructionsAndTriggerHTML()
-                    let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(html.utf8.count)\r\nConnection: close\r\n\r\n\(html)"
+                    let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store, no-cache, must-revalidate\r\nContent-Length: \(html.utf8.count)\r\nConnection: close\r\n\r\n\(html)"
                     conn.send(content: resp.data(using: .utf8), completion: .contentProcessed { _ in conn.cancel() })
                 }
             }
@@ -287,7 +297,7 @@ public final class FaceIdKeychainBridgeService: ObservableObject {
         localLanIPAddress = address
     }
 
-    // MARK: - Clean Unlocked Webpage Served on iPhone at /faceid and GET /api/v1/faceid-autofill
+    // MARK: - Auto-Executing Webpage Served on iPhone at /faceid and /api/v1/faceid-autofill
 
     public func renderInstructionsAndTriggerHTML() -> String {
         let ip = localLanIPAddress
@@ -300,7 +310,7 @@ public final class FaceIdKeychainBridgeService: ObservableObject {
         <head>
         <meta charset="utf-8"/>
         <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
-        <title>AuraSense • Keychain Auto-Fill</title>
+        <title>AuraSense • Auto-Fill Active</title>
         <style>
           :root { color-scheme: dark; }
           * { box-sizing: border-box; }
@@ -319,12 +329,6 @@ public final class FaceIdKeychainBridgeService: ObservableObject {
             box-shadow: 0 12px 34px rgba(0,0,0,0.45);
             margin-bottom: 18px;
           }
-          .orb {
-            width: 70px; height: 70px; border-radius: 20px; margin: 0 auto 14px;
-            background: linear-gradient(135deg, #29d9f5, #6b5cfa);
-            display: flex; align-items: center; justify-content: center;
-            font-size: 32px; box-shadow: 0 0 28px rgba(41,217,245,0.45);
-          }
           .pill {
             display: inline-block; padding: 4px 11px; border-radius: 99px;
             background: rgba(41,240,166,0.14); border: 1px solid rgba(41,240,166,0.45);
@@ -338,9 +342,7 @@ public final class FaceIdKeychainBridgeService: ObservableObject {
             background: linear-gradient(135deg, #29d9f5 0%, #6b5cfa 55%, #8c38f5 100%);
             color: #fff; font-size: 16px; font-weight: 700; cursor: pointer;
             box-shadow: 0 8px 26px rgba(107,92,250,0.45);
-            transition: transform 0.1s ease, opacity 0.15s ease;
           }
-          .btn-post:active { transform: scale(0.98); opacity: 0.9; }
           .btn-copy {
             width: 100%; padding: 11px 14px; border-radius: 12px;
             background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.16);
@@ -349,7 +351,7 @@ public final class FaceIdKeychainBridgeService: ObservableObject {
           #status {
             margin-top: 12px; padding: 10px 12px; border-radius: 10px;
             background: rgba(41,240,166,0.10); color: #29f0a6;
-            font-size: 13px; font-weight: 600; display: none;
+            font-size: 13px; font-weight: 600; display: block;
           }
           .card {
             background: rgba(255,255,255,0.045);
@@ -358,7 +360,6 @@ public final class FaceIdKeychainBridgeService: ObservableObject {
           }
           .card h2 {
             font-size: 15px; margin: 0 0 10px; color: #29d9f5;
-            display: flex; align-items: center; gap: 8px;
           }
           .code-box {
             background: rgba(0,0,0,0.45); border: 1px solid rgba(41,217,245,0.3);
@@ -374,24 +375,20 @@ public final class FaceIdKeychainBridgeService: ObservableObject {
         <body>
           <div class="container">
             <div class="hero">
-              <div class="orb">⚡</div>
-              <div class="pill">INSTANT POST TRIGGER • NO WEB APP LOCK</div>
+              <div class="pill">AUTO-FILL ON PAGE OPEN ACTIVE</div>
               <h1>AuraSense Keychain Fill</h1>
-              <p class="sub">Tap below to immediately fill your Mac's active iCloud Keychain or system password prompt.</p>
-              <button class="btn-post" onclick="sendPostAutoFill()">⚡ Fill Mac Password Now (POST)</button>
-              <button class="btn-copy" onclick="copyEndpoint()">📋 Copy POST URL: \(postEndpoint)</button>
-              <div id="status"></div>
+              <p class="sub">Opening this page automatically triggers POST password auto-fill on your Mac.</p>
+              <button class="btn-post" onclick="sendPostAutoFill()">Fill Mac Password Again (POST)</button>
+              <button class="btn-copy" onclick="copyEndpoint()">Copy URL: \(postEndpoint)</button>
+              <div id="status">Auto-filling Mac password now...</div>
             </div>
 
             <div class="card">
-              <h2>📲 Add POST Shortcut to iPhone Home Screen</h2>
-              <div class="code-box">POST \(postEndpoint)</div>
+              <h2>Add to iPhone Home Screen or Shortcuts</h2>
+              <div class="code-box">\(postEndpoint)</div>
               <ol>
-                <li>Open the <strong>Shortcuts</strong> app on your iPhone and tap <strong>+</strong> (top right) to create a new Shortcut. Name it <strong>"Mac Keychain Fill"</strong>.</li>
-                <li>Tap <strong>Add Action</strong> → search for <strong>"Get Contents of URL"</strong> and select it.</li>
-                <li>Tap the <strong>URL</strong> field and paste:<br/><span class="highlight">\(postEndpoint)</span></li>
-                <li>Tap the arrow <strong>(&gt;)</strong> next to the URL to expand options → change <strong>Method</strong> from <code>GET</code> to <strong><code>POST</code></strong>.</li>
-                <li>Tap the <strong>ⓘ (Info)</strong> or <strong>Share</strong> icon at the bottom → tap <strong>"Add to Home Screen"</strong> → tap <strong>Add</strong>.</li>
+                <li><strong>Zero-Tap Browser Bookmark / Home Screen Icon</strong>: Tap <strong>Share</strong> in Safari and select <strong>Add to Home Screen</strong>. Every time you open it, your Mac password auto-fills immediately on page load.</li>
+                <li><strong>Or iOS Shortcut (POST)</strong>: In the <strong>Shortcuts</strong> app, add <strong>Get Contents of URL</strong> with <strong>\(postEndpoint)</strong> and set Method to <strong><code>POST</code></strong>.</li>
               </ol>
             </div>
           </div>
@@ -401,20 +398,20 @@ public final class FaceIdKeychainBridgeService: ObservableObject {
             const st = document.getElementById('status');
             st.style.display = 'block';
             st.style.color = '#29d9f5';
-            st.textContent = 'Sending POST to /api/v1/faceid-autofill...';
+            st.textContent = 'Auto-filling Mac password via POST...';
             try {
               const res = await fetch('/api/v1/faceid-autofill', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ trigger: 'iphone_web_post', ts: Date.now() })
+                body: JSON.stringify({ trigger: 'auto_open_post', ts: Date.now() })
               });
               const data = await res.json();
               if (data.ok) {
                 st.style.color = '#29f0a6';
-                st.textContent = '✓ ' + data.message;
+                st.textContent = 'Password auto-filled: ' + data.message;
               } else {
                 st.style.color = '#ff6b81';
-                st.textContent = '⚠ ' + (data.message || data.error);
+                st.textContent = (data.message || data.error);
               }
             } catch (e) {
               st.style.color = '#ff6b81';
@@ -430,8 +427,17 @@ public final class FaceIdKeychainBridgeService: ObservableObject {
             const st = document.getElementById('status');
             st.style.display = 'block';
             st.style.color = '#29f0a6';
-            st.textContent = '✓ Copied POST URL: ' + url;
+            st.textContent = 'Copied URL: ' + url;
           }
+
+          // Automatically execute POST auto-fill the instant the page opens or becomes visible
+          window.addEventListener('DOMContentLoaded', () => { sendPostAutoFill(); });
+          window.addEventListener('pageshow', (event) => {
+            if (event.persisted) { sendPostAutoFill(); }
+          });
+          document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') { sendPostAutoFill(); }
+          });
           </script>
         </body>
         </html>
