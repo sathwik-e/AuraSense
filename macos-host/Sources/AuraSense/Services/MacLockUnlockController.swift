@@ -1,4 +1,3 @@
-import SwiftUI
 import Foundation
 import SwiftUI
 import AppKit
@@ -8,10 +7,9 @@ import IOKit
 import IOKit.pwr_mgt
 import Carbon.HIToolbox
 
-/// Handles macOS Accessibility permission verification, screen lock state detection,
-/// external monitor DisplayPort/HDMI wake & input signaling, immediate locking,
-/// and non-fickle Keychain password entry (including global hotkey ⌃⌥⌘Space,
-/// 4-second auto-wiping clipboard assist, and login.keychain-db timeout optimization).
+/// Handles macOS Accessibility permission verification & re-prompting, `/Applications` installation,
+/// screen lock state detection, external monitor DisplayPort/HDMI wake & input signaling,
+/// immediate locking, and Keychain password entry.
 @MainActor
 public final class MacLockUnlockController: ObservableObject {
     public static let shared = MacLockUnlockController()
@@ -35,14 +33,14 @@ public final class MacLockUnlockController: ObservableObject {
     private var externalDisplayBounds: CGRect?
 
     private init() {
-        refreshAccessibilityStatus(prompt: false)
-        refreshScreenLockState()
+        _ = refreshAccessibilityStatus(prompt: false)
+        _ = refreshScreenLockState()
         refreshExternalMonitorTopology()
         registerSystemNotifications()
         startPermissionPolling()
     }
 
-    // MARK: - Accessibility & System Settings Helpers
+    // MARK: - Accessibility & Bluetooth Permission Prompting
 
     @discardableResult
     public func refreshAccessibilityStatus(prompt: Bool = false) -> Bool {
@@ -55,14 +53,56 @@ public final class MacLockUnlockController: ObservableObject {
         return trusted
     }
 
-    public func openAccessibilitySettings() {
-        _ = refreshAccessibilityStatus(prompt: true)
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-            NSWorkspace.shared.open(url)
+    /// Prompts the user for macOS Accessibility permission.
+    /// When a new build is installed, macOS TCC can hold a stale CDHash entry from a previous build
+    /// that prevents the native permission popup from appearing. Resetting the stale TCC entry via
+    /// `tccutil reset Accessibility com.aurasense.mac.app` forces macOS to display a fresh system prompt.
+    public func promptForAccessibilityPermission(resetStaleEntryIfNeeded: Bool = true, openSettingsPane: Bool = false) {
+        if refreshAccessibilityStatus(prompt: false) {
+            if openSettingsPane {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+            return
+        }
+
+        let currentBuild = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "101"
+        let lastResetBuild = UserDefaults.standard.string(forKey: "aurasense.lastTccResetBuild") ?? ""
+
+        if resetStaleEntryIfNeeded || lastResetBuild != currentBuild {
+            UserDefaults.standard.set(currentBuild, forKey: "aurasense.lastTccResetBuild")
+            resetStaleAccessibilityTCCEntries()
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
+            guard let self = self else { return }
+            _ = self.refreshAccessibilityStatus(prompt: true)
+            if openSettingsPane {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
         }
     }
 
+    private func resetStaleAccessibilityTCCEntries() {
+        let bundleIDs = ["com.aurasense.mac.app", "com.aurasense.mac.installer"]
+        for id in bundleIDs {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+            proc.arguments = ["reset", "Accessibility", id]
+            try? proc.run()
+            proc.waitUntilExit()
+        }
+    }
+
+    public func openAccessibilitySettings() {
+        promptForAccessibilityPermission(resetStaleEntryIfNeeded: true, openSettingsPane: true)
+    }
+
     public func openBluetoothSettings() {
+        BLEProximityEngine.shared.promptForBluetoothPermission()
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Bluetooth") {
             NSWorkspace.shared.open(url)
         }
@@ -74,8 +114,96 @@ public final class MacLockUnlockController: ObservableObject {
         }
     }
 
+    // MARK: - Reliable Installation to /Applications/AuraSense.app
+
+    public var isInstalledInApplications: Bool {
+        FileManager.default.fileExists(atPath: "/Applications/AuraSense.app/Contents/MacOS/AuraSense")
+    }
+
+    public var isRunningFromApplications: Bool {
+        Bundle.main.bundlePath == "/Applications/AuraSense.app"
+    }
+
+    /// Installs or updates `/Applications/AuraSense.app` using `/usr/bin/ditto`, strips quarantine flags,
+    /// ensures the bundle identifier is `com.aurasense.mac.app`, and re-signs the bundle.
+    @discardableResult
+    public func installToApplicationsFolder() -> (Bool, String) {
+        let destPath = "/Applications/AuraSense.app"
+        let currentBundlePath = Bundle.main.bundlePath
+
+        if currentBundlePath == destPath && isInstalledInApplications {
+            return (true, "AuraSense is installed and running from /Applications/AuraSense.app.")
+        }
+
+        // Prefer sibling AuraSense.app if user launched "Install AuraSense.app" inside the DMG
+        let parentDir = (currentBundlePath as NSString).deletingLastPathComponent
+        let siblingAppPath = (parentDir as NSString).appendingPathComponent("AuraSense.app")
+        let sourceAppPath: String
+        if FileManager.default.fileExists(atPath: (siblingAppPath as NSString).appendingPathComponent("Contents/MacOS/AuraSense")) {
+            sourceAppPath = siblingAppPath
+        } else if currentBundlePath.hasSuffix(".app") {
+            sourceAppPath = currentBundlePath
+        } else {
+            return (false, "Could not locate source .app bundle to copy.")
+        }
+
+        // Step 1: Try direct installation via /usr/bin/ditto
+        let dittoProc = Process()
+        dittoProc.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        dittoProc.arguments = [sourceAppPath, destPath]
+        do {
+            try dittoProc.run()
+            dittoProc.waitUntilExit()
+        } catch {
+            // Fall through to check status
+        }
+
+        // Ensure Info.plist in /Applications/AuraSense.app has the main app bundle identifier (not installer)
+        let destPlistPath = "\(destPath)/Contents/Info.plist"
+        if let plistText = try? String(contentsOfFile: destPlistPath, encoding: .utf8) {
+            let fixedPlist = plistText
+                .replacingOccurrences(of: "<string>Install AuraSense</string>", with: "<string>AuraSense</string>")
+                .replacingOccurrences(of: "<string>com.aurasense.mac.installer</string>", with: "<string>com.aurasense.mac.app</string>")
+            try? fixedPlist.write(toFile: destPlistPath, atomically: true, encoding: .utf8)
+        }
+
+        // Strip quarantine and ad-hoc sign /Applications/AuraSense.app
+        let xattrProc = Process()
+        xattrProc.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
+        xattrProc.arguments = ["-cr", destPath]
+        try? xattrProc.run()
+        xattrProc.waitUntilExit()
+
+        let signProc = Process()
+        signProc.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        signProc.arguments = ["--force", "--deep", "--sign", "-", destPath]
+        try? signProc.run()
+        signProc.waitUntilExit()
+
+        if isInstalledInApplications {
+            lastActionSummary = "Installed AuraSense.app into /Applications"
+            return (true, "Installed AuraSense.app in /Applications.")
+        }
+
+        // Step 2: Fallback with administrator privileges via osascript if /Applications required admin rights
+        let escapedSrc = sourceAppPath.replacingOccurrences(of: "'", with: "'\\''")
+        let shellCmd = "/bin/rm -rf '/Applications/AuraSense.app' && /usr/bin/ditto '\(escapedSrc)' '/Applications/AuraSense.app' && /usr/bin/xattr -cr '/Applications/AuraSense.app' && /usr/bin/codesign --force --deep --sign - '/Applications/AuraSense.app'"
+        let osaProc = Process()
+        osaProc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        osaProc.arguments = ["-e", "do shell script \"\(shellCmd)\" with administrator privileges"]
+        try? osaProc.run()
+        osaProc.waitUntilExit()
+
+        if isInstalledInApplications {
+            lastActionSummary = "Installed AuraSense.app into /Applications"
+            return (true, "Installed AuraSense.app in /Applications.")
+        }
+
+        return (false, "Unable to copy to /Applications automatically. Drag AuraSense.app into /Applications in Finder.")
+    }
+
     private func startPermissionPolling() {
-        permissionPollTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        permissionPollTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.refreshAccessibilityStatus(prompt: false)
                 self?.refreshScreenLockState()
@@ -86,7 +214,6 @@ public final class MacLockUnlockController: ObservableObject {
 
     // MARK: - External Monitor Topology & Display Input Signal
 
-    /// Inspects active CoreGraphics displays to detect external monitors and closed-clamshell mode.
     public func refreshExternalMonitorTopology() {
         var displayCount: UInt32 = 0
         var activeDisplays = [CGDirectDisplayID](repeating: 0, count: 16)
@@ -114,15 +241,9 @@ public final class MacLockUnlockController: ObservableObject {
         externalDisplayBounds = firstExternalBounds
     }
 
-    /// Wakes both the internal display and any connected external monitors by:
-    /// 1. Declaring IOKit local user activity (`IOPMAssertionDeclareUserActivity`)
-    /// 2. Clearing `IODisplayWrangler` idle request (`IORequestIdle = false`)
-    /// 3. Firing `caffeinate -u -t 3` to force GPU DisplayPort/HDMI/USB-C link wake
-    /// 4. Sending an active framebuffer cursor nudge on the external monitor's coordinate space
     public func wakeDisplayAndSendMonitorInput() {
         refreshExternalMonitorTopology()
 
-        // 1. IOKit PowerManagement User Activity Assertion
         let assertionName = "AuraSense Proximity & External Monitor Wake" as CFString
         IOPMAssertionDeclareUserActivity(
             assertionName,
@@ -130,14 +251,12 @@ public final class MacLockUnlockController: ObservableObject {
             &userActivityAssertionID
         )
 
-        // 2. Wake IODisplayWrangler so external DisplayPort/HDMI links resume active scanout
         let wrangler = IORegistryEntryFromPath(kIOMainPortDefault, "IOService:/IOResources/IODisplayWrangler")
         if wrangler != MACH_PORT_NULL {
             IORegistryEntrySetCFProperty(wrangler, "IORequestIdle" as CFString, kCFBooleanFalse)
             IOObjectRelease(wrangler)
         }
 
-        // 3. Trigger caffeinate -u pulse to force external monitor HPD / input wake
         if sendMonitorInputSignal {
             DispatchQueue.global(qos: .userInitiated).async {
                 let proc = Process()
@@ -147,7 +266,6 @@ public final class MacLockUnlockController: ObservableObject {
             }
         }
 
-        // 4. If connected to an external monitor, send a 1px framebuffer cursor nudge on the external display
         if hasExternalMonitorConnected && sendMonitorInputSignal {
             let bounds = externalDisplayBounds ?? CGRect(x: 400, y: 300, width: 1920, height: 1080)
             let targetPoint = CGPoint(x: bounds.midX, y: bounds.midY)
@@ -235,7 +353,7 @@ public final class MacLockUnlockController: ObservableObject {
         return isScreenLocked
     }
 
-    // MARK: - Lock Execution (BLEUnlock / Glance Method + External Monitor Standby)
+    // MARK: - Lock Execution
 
     public enum LockResult {
         case lockedViaPrivateFramework
@@ -256,7 +374,6 @@ public final class MacLockUnlockController: ObservableObject {
             NSSound(named: NSSound.Name("Tink"))?.play()
         }
 
-        // Primary Mechanism: login.framework SACLockScreenImmediate
         let frameworkPath = "/System/Library/PrivateFrameworks/login.framework/Versions/Current/login"
         if let handle = dlopen(frameworkPath, RTLD_NOW),
            let sym = dlsym(handle, "SACLockScreenImmediate") {
@@ -273,7 +390,6 @@ public final class MacLockUnlockController: ObservableObject {
             return .lockedViaPrivateFramework
         }
 
-        // Fallback Mechanism: Synthesize Ctrl + Cmd + Q via CGEvent
         guard refreshAccessibilityStatus(prompt: false) else {
             lastActionSummary = "Lock fallback requires Accessibility permission"
             return .failed("Accessibility permission required for keyboard shortcut fallback.")
@@ -310,7 +426,7 @@ public final class MacLockUnlockController: ObservableObject {
         }
     }
 
-    // MARK: - Wake & Unlock Execution (With External Monitor Input Settle Delay)
+    // MARK: - Wake & Unlock Execution
 
     public enum UnlockResult {
         case unlockedSuccessfully
@@ -333,25 +449,20 @@ public final class MacLockUnlockController: ObservableObject {
 
         let currentlyLocked = refreshScreenLockState()
         if !currentlyLocked && !forceTestInForeground {
-            // Even if already unlocked, if an external monitor was asleep, send display wake signal
             if isDisplayAsleep || hasExternalMonitorConnected {
                 wakeDisplayAndSendMonitorInput()
             }
             return .alreadyUnlocked
         }
 
-        // Step 1: Wake internal & external monitor inputs
         wakeDisplayAndSendMonitorInput()
 
-        // Step 2: Wait for external monitor input handshake if connected, or standard wake delay
         let settleMs = hasExternalMonitorConnected ? max(externalMonitorSettleMs, 420.0) : 400.0
         try? await Task.sleep(nanoseconds: UInt64(settleMs * 1_000_000))
 
-        // Nudge Shift key to ensure the macOS lock screen password field is focused
         postKeyTap(virtualKey: CGKeyCode(kVK_Shift))
         try? await Task.sleep(nanoseconds: 180_000_000)
 
-        // Step 3: Type password character-by-character using Unicode CGEvents
         await typePasswordString(password, submitWithReturn: true)
 
         if playChime {
@@ -366,11 +477,8 @@ public final class MacLockUnlockController: ObservableObject {
         return .unlockedSuccessfully
     }
 
-    // MARK: - Simpler, Non-Fickle Keychain Password Alternatives
+    // MARK: - Global Instant Fill Hotkeys
 
-    /// Registers global keyboard shortcuts (`⌃⌥⌘Space` to instant-type password + Return,
-    /// and `⌃⌥⌘V` to copy password for 4 seconds with auto-clear) so the user never has to rely
-    /// on fickle background dialog detection when an iCloud Keychain prompt appears.
     public func registerGlobalInstantFillShortcuts() {
         if globalKeyMonitor == nil {
             globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -395,16 +503,15 @@ public final class MacLockUnlockController: ObservableObject {
         let activeFlags = event.modifierFlags.intersection([.control, .option, .command, .shift])
         guard activeFlags == requiredFlags else { return }
 
-        if event.keyCode == 49 { // Space bar (⌃⌥⌘Space)
+        if event.keyCode == 49 {
             Task { @MainActor in
                 _ = await self.instantFillActivePasswordField()
             }
-        } else if event.keyCode == 9 { // 'V' key (⌃⌥⌘V)
+        } else if event.keyCode == 9 {
             self.copyPasswordTemporarilyForPaste()
         }
     }
 
-    /// Immediately types the stored Keychain password + Return into the currently active field on demand.
     @discardableResult
     public func instantFillActivePasswordField() async -> Bool {
         guard refreshAccessibilityStatus(prompt: false) else {
@@ -416,7 +523,6 @@ public final class MacLockUnlockController: ObservableObject {
             return false
         }
 
-        // Release any held modifiers briefly before typing
         try? await Task.sleep(nanoseconds: 120_000_000)
         await typePasswordString(password, submitWithReturn: true)
 
@@ -433,8 +539,6 @@ public final class MacLockUnlockController: ObservableObject {
         return true
     }
 
-    /// Copies the Keychain password to the clipboard as a concealed transient item for 4 seconds,
-    /// then automatically wipes it—bypassing macOS Secure Input restrictions with a single ⌘V.
     public func copyPasswordTemporarilyForPaste() {
         guard let password = KeychainManager.shared.retrievePassword(), !password.isEmpty else {
             lastActionSummary = "No password saved in Keychain Vault"
@@ -469,12 +573,9 @@ public final class MacLockUnlockController: ObservableObject {
         }
     }
 
-    /// Configures the user's macOS `login.keychain-db` so it stays unlocked while the Mac is unlocked
-    /// (preventing repetitive Keychain password popups every few minutes when working on an external monitor).
     public func optimizeLoginKeychainStayUnlocked() -> (Bool, String) {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        // Calling `security set-keychain-settings` with no -l or -u flags disables sleep/timeout auto-lock on login.keychain-db
         proc.arguments = ["set-keychain-settings"]
         let errPipe = Pipe()
         proc.standardError = errPipe
@@ -499,8 +600,6 @@ public final class MacLockUnlockController: ObservableObject {
             return (false, error.localizedDescription)
         }
     }
-
-    // MARK: - Internal Typing Helper
 
     private func typePasswordString(_ password: String, submitWithReturn: Bool) async {
         let eventSource = CGEventSource(stateID: .hidSystemState)

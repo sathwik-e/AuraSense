@@ -2,8 +2,8 @@ import SwiftUI
 import AppKit
 
 /// Manages macOS Dock icon visibility (`NSApplication.ActivationPolicy`).
-/// When the main Dashboard or Installer window is open, AuraSense uses `.regular` policy;
-/// as soon as the window is closed, it switches to `.accessory` so the Dock icon disappears
+/// When the main Dashboard or Guided Setup window is open, AuraSense uses `.regular` policy;
+/// when all standard windows are closed, it switches to `.accessory` so the Dock icon disappears
 /// and AuraSense lives quietly in the macOS Menu Bar with its Eclipse + Proximity Orbit icon.
 @MainActor
 public final class DockVisibilityManager: ObservableObject {
@@ -20,6 +20,9 @@ public final class DockVisibilityManager: ObservableObject {
     public func showAppInForeground() {
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
+        for window in NSApplication.shared.windows where isStandardAppWindow(window) {
+            window.makeKeyAndOrderFront(nil)
+        }
     }
 
     public func hideFromDockImmediately() {
@@ -66,6 +69,15 @@ public final class AuraSenseAppDelegate: NSObject, NSApplicationDelegate {
         _ = FaceIdKeychainBridgeService.shared
         MacLockUnlockController.shared.registerGlobalInstantFillShortcuts()
 
+        // Automatically copy AuraSense.app to /Applications if launched from DMG or build directory
+        if !MacLockUnlockController.shared.isRunningFromApplications {
+            DispatchQueue.global(qos: .userInitiated).async {
+                Task { @MainActor in
+                    _ = MacLockUnlockController.shared.installToApplicationsFolder()
+                }
+            }
+        }
+
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(windowDidBecomeKey(_:)),
@@ -79,12 +91,27 @@ public final class AuraSenseAppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
-        if BLEProximityEngine.shared.hasCompletedOnboarding && DockVisibilityManager.shared.hideDockWhenWindowClosed {
-            NSApplication.shared.setActivationPolicy(.accessory)
-        } else {
-            NSApplication.shared.setActivationPolicy(.regular)
-            NSApplication.shared.activate(ignoringOtherApps: true)
+        // Always bring the window to the front on launch and prompt for Accessibility if needed
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            Task { @MainActor in
+                if !MacLockUnlockController.shared.refreshAccessibilityStatus(prompt: false) {
+                    MacLockUnlockController.shared.promptForAccessibilityPermission(
+                        resetStaleEntryIfNeeded: true,
+                        openSettingsPane: false
+                    )
+                }
+            }
         }
+    }
+
+    public func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        Task { @MainActor in
+            DockVisibilityManager.shared.showAppInForeground()
+        }
+        return true
     }
 
     @objc private func windowDidBecomeKey(_ notification: Notification) {
@@ -145,6 +172,10 @@ public struct AuraSenseApp: App {
                 }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
 
+                Button("Prompt Accessibility Permission Again") {
+                    lockController.promptForAccessibilityPermission(resetStaleEntryIfNeeded: true, openSettingsPane: true)
+                }
+
                 Divider()
 
                 Button("Instant-Fill Active Password Prompt (⌃⌥⌘Space)") {
@@ -173,7 +204,7 @@ public struct AuraSenseApp: App {
             }
         }
 
-        Window("AuraSense Installer & Setup", id: "installer-wizard") {
+        Window("AuraSense Guided Setup", id: "installer-wizard") {
             InstallerWindowView()
         }
         .windowResizability(.contentSize)

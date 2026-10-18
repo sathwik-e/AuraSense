@@ -1,23 +1,15 @@
-# AuraSense v1.0 Release Notes
+# AuraSense v1 Release Notes
 
-## What's New in v1.0
+## What's Fixed & Included in v1
 
-- **Neon Orbit Eclipse Identity and Typography**: Updated app icon, DMG installer window, dashboard, and mobile web trigger with the Neon Orbit Eclipse emblem and `Λ U R Λ S E N S E` geometric typography.
-- **Eclipse + Proximity Orbit Menu Bar Icon**: Custom macOS template menu bar icon combining an inner solar/lunar eclipse crescent with an outer BLE proximity orbit ring and signal node that adapts to in-range, grace countdown, calibrating, and locked states.
+- **Fixed `/Applications` Installation**: Fixed HFS+ catalog B-tree FastUnicodeCompare key ordering (`_CodeSignature` sorting after `Info.plist` and `MacOS`) and `.app` bundle bit (`0x2000`) inside `AuraSense.dmg`, and added automatic `/usr/bin/ditto` installation into `/Applications/AuraSense.app` whenever `Install AuraSense.app` or `AuraSense.app` is opened from the DMG.
+- **4-Step Guided Setup & Permission Re-Prompting**: Launches the interactive 4-step Guided Setup Wizard on startup whenever setup or permissions are incomplete, clears stale TCC CDHash entries (`tccutil reset Accessibility com.aurasense.mac.app`) so macOS prompts again for Accessibility permission, and prompts for Bluetooth scanning permission.
+- **Neon Orbit Eclipse Identity & Menu Bar Icon**: Features the Neon Orbit Eclipse app icon, `Λ U R Λ S E N S E` geometric typography, and the custom Eclipse + Proximity Orbit menu bar template icon.
 - **Instant Auto-Fill on Browser Open**: Opening `http://<mac-ip>:8765/api/v1/faceid-autofill` or `http://<mac-ip>:8765/faceid` immediately wakes connected displays and fills the active macOS password prompt on page load.
-- **10-Second Desk Signal Calibration**: Samples resting BLE RSSI on your desk for 10 seconds and automatically configures unlock and lock thresholds.
-- **External Monitor Display Wake**: Sends active DisplayPort, HDMI, and USB-C wake signals before entering credentials.
-
-## Quick Setup
-
-1. Open `AuraSense.dmg` and drag `AuraSense.app` to `Applications`.
-2. Grant **Accessibility** and **Bluetooth** permissions when prompted.
-3. Save your Mac password in **Security & Keychain** and run the **10s Desk Signal Scan**.
-4. On your iPhone, open `http://192.168.1.8:8765/api/v1/faceid-autofill` in Safari and tap **Share > Add to Home Screen** for one-tap password auto-fill.
 
 ## Release Assets
 
-- `releases/v1.0/AuraSense.dmg`
-- `releases/v1.0/AuraSense-1.0.dmg`
-- `releases/v1.0/AuraSense.app`
-- `releases/v1.0/AuraSense.app.zip`
+- `releases/v1/AuraSense.dmg`
+- `releases/v1/AuraSense-v1.dmg`
+- `releases/v1/AuraSense.app`
+- `releases/v1/AuraSense.app.zip`

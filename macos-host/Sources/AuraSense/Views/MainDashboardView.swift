@@ -26,11 +26,30 @@ public struct MainDashboardView: View {
     @ObservedObject var engine = BLEProximityEngine.shared
     @ObservedObject var lockController = MacLockUnlockController.shared
     @AuraState private var selectedSection: DashboardSection = .radar
-    @AuraState private var showInstallerSheet: Bool = false
+    @AuraState private var showGuidedSetupWizard: Bool = BLEProximityEngine.shared.needsGuidedSetup
 
     public init() {}
 
     public var body: some View {
+        Group {
+            if showGuidedSetupWizard {
+                InstallerWindowView {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        showGuidedSetupWizard = false
+                    }
+                }
+            } else {
+                dashboardSplitView
+            }
+        }
+        .onAppear {
+            if engine.needsGuidedSetup {
+                showGuidedSetupWizard = true
+            }
+        }
+    }
+
+    private var dashboardSplitView: some View {
         NavigationSplitView {
             VStack(alignment: .leading, spacing: 14) {
                 // Brand Identity Header in Sidebar using Neon Orbit Eclipse & Λ U R Λ S E N S E Typography
@@ -38,7 +57,7 @@ public struct MainDashboardView: View {
                     AuraEclipseLogoView(size: 36)
                     VStack(alignment: .leading, spacing: 2) {
                         AuraBrandWordmarkView(size: 13, tracking: 2.2)
-                        Text("BLE Proximity v1.0")
+                        Text("BLE Proximity v1")
                             .font(.system(size: 10.5, weight: .medium))
                             .foregroundStyle(.secondary)
                     }
@@ -66,10 +85,25 @@ public struct MainDashboardView: View {
                             .foregroundStyle(.secondary)
                     }
 
+                    if !lockController.isAccessibilityTrusted {
+                        Button {
+                            lockController.promptForAccessibilityPermission(resetStaleEntryIfNeeded: true, openSettingsPane: true)
+                        } label: {
+                            Label("Prompt Permission", systemImage: "hand.raised.fill")
+                                .font(.system(size: 12, weight: .semibold))
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(AuraTheme.indigoGlow)
+                        .controlSize(.small)
+                    }
+
                     Button {
-                        showInstallerSheet = true
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            showGuidedSetupWizard = true
+                        }
                     } label: {
-                        Label("Quick Setup Guide", systemImage: "slider.horizontal.3")
+                        Label("Guided Setup Wizard", systemImage: "slider.horizontal.3")
                             .font(.system(size: 12, weight: .medium))
                             .frame(maxWidth: .infinity)
                     }
@@ -80,23 +114,68 @@ public struct MainDashboardView: View {
             }
             .navigationSplitViewColumnWidth(min: 215, ideal: 230, max: 260)
         } detail: {
-            Group {
-                switch selectedSection {
-                case .radar:
-                    AuraRadarView(selectedTab: $selectedSection)
-                case .devices:
-                    DeviceScannerView()
-                case .thresholds:
-                    ThresholdsView()
-                case .faceIdBridge:
-                    FaceIdKeychainBridgeView()
-                case .security:
-                    SecuritySettingsView()
-                case .activity:
-                    ActivityLogView()
+            VStack(spacing: 0) {
+                if !lockController.isAccessibilityTrusted || !KeychainManager.shared.hasStoredPassword() || engine.selectedDeviceID.isEmpty {
+                    HStack(spacing: 12) {
+                        Image(systemName: "exclamationmark.shield.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(AuraTheme.amberGlow)
+
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(
+                                !lockController.isAccessibilityTrusted
+                                    ? "Accessibility Permission Required for Auto-Unlock & Password Fill"
+                                    : (engine.selectedDeviceID.isEmpty ? "No Bluetooth Device Selected Yet" : "Save Your Mac Login Password in Keychain")
+                            )
+                            .font(.system(size: 12.5, weight: .bold))
+                            Text("Click 'Open Guided Setup' or 'Prompt Accessibility' to complete setup.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        if !lockController.isAccessibilityTrusted {
+                            Button("Prompt Accessibility…") {
+                                lockController.promptForAccessibilityPermission(resetStaleEntryIfNeeded: true, openSettingsPane: true)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(AuraTheme.indigoGlow)
+                            .controlSize(.small)
+                        }
+
+                        Button("Open Guided Setup") {
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                showGuidedSetupWizard = true
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(AuraTheme.cyanGlow)
+                        .controlSize(.small)
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 10)
+                    .background(Color.orange.opacity(0.12))
                 }
+
+                Group {
+                    switch selectedSection {
+                    case .radar:
+                        AuraRadarView(selectedTab: $selectedSection)
+                    case .devices:
+                        DeviceScannerView()
+                    case .thresholds:
+                        ThresholdsView()
+                    case .faceIdBridge:
+                        FaceIdKeychainBridgeView()
+                    case .security:
+                        SecuritySettingsView()
+                    case .activity:
+                        ActivityLogView()
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(
                 LinearGradient(
                     colors: [
@@ -125,24 +204,16 @@ public struct MainDashboardView: View {
                     .help("Immediately lock the Mac screen")
 
                     Button {
-                        showInstallerSheet = true
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            showGuidedSetupWizard = true
+                        }
                     } label: {
                         Label("Setup Guide", systemImage: "slider.horizontal.3")
                     }
-                    .help("Open AuraSense Setup Guide")
+                    .help("Open AuraSense Guided Setup")
                 }
             }
         }
         .frame(minWidth: 940, minHeight: 620)
-        .sheet(isPresented: $showInstallerSheet) {
-            InstallerWindowView {
-                showInstallerSheet = false
-            }
-        }
-        .onAppear {
-            if !engine.hasCompletedOnboarding {
-                showInstallerSheet = true
-            }
-        }
     }
 }

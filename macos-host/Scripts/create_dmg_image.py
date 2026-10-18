@@ -16,7 +16,12 @@ def cat_key(parent_cnid, name):
     u = u16_str(name)
     return struct.pack('>HI', 4 + len(u), parent_cnid) + u
 
-def make_finder_background_alias(create_hfs_ts, bg_dir_cnid=17, bg_file_cnid=18):
+def hfs_fast_unicode_sort_key(name):
+    # Apple HFS+ FastUnicodeCompare folds ASCII lowercase 'a'..'z' (0x61..0x7A)
+    # to uppercase 'A'..'Z' (0x41..0x5A), so letters (65..90) sort BEFORE '_' (95).
+    return [ord(c.upper()) for c in name]
+
+def make_finder_background_alias(create_hfs_ts, bg_dir_cnid=16, bg_file_cnid=17):
     vol_name = "AuraSense"
     file_name = "dmg_background.png"
     vol_pas = bytes([len(vol_name)]) + vol_name.encode("ascii") + b"\x00" * (27 - len(vol_name))
@@ -60,7 +65,7 @@ def make_finder_background_alias(create_hfs_ts, bg_dir_cnid=17, bg_file_cnid=18)
     )
     return header + tags
 
-def write_custom_ds_store(target_path):
+def write_custom_ds_store(target_path, bg_dir_cnid=16, bg_file_cnid=17):
     bwsp = {
         'ContainerShowSidebar': False,
         'ShowPathbar': False,
@@ -72,11 +77,11 @@ def write_custom_ds_store(target_path):
     }
     icvp = {
         'arrangeBy': 'none',
-        'backgroundColorBlue': 0.11,
-        'backgroundColorGreen': 0.05,
-        'backgroundColorRed': 0.04,
+        'backgroundColorBlue': 0.05,
+        'backgroundColorGreen': 0.02,
+        'backgroundColorRed': 0.01,
         'backgroundType': 2,
-        'backgroundImageAlias': make_finder_background_alias(hfs_time()),
+        'backgroundImageAlias': make_finder_background_alias(hfs_time(), bg_dir_cnid, bg_file_cnid),
         'gridOffsetX': 0.0,
         'gridOffsetY': 0.0,
         'gridSpacing': 100.0,
@@ -107,7 +112,7 @@ def write_custom_ds_store(target_path):
         ('AuraSense.app', 'Iloc', 'blob', iloc_payload(175, 220)),
         ('Install AuraSense.app', 'Iloc', 'blob', iloc_payload(330, 345)),
     ]
-    entries.sort(key=lambda item: (item[0].lower(), item[1]))
+    entries.sort(key=lambda item: (item[0].upper(), item[1]))
     raw_records = b''.join(make_entry(*e) for e in entries)
 
     leaf_block = bytearray(4096)
@@ -170,7 +175,7 @@ class HFSPlusBuilder:
         if not is_root:
             self.next_cnid += 1
 
-        children_names = sorted(os.listdir(fs_path), key=lambda x: x.lower())
+        children_names = sorted(os.listdir(fs_path), key=hfs_fast_unicode_sort_key)
         folder_item = {
             'type': 'folder',
             'cnid': cnid,
@@ -180,6 +185,7 @@ class HFSPlusBuilder:
             'mtime': hfs_time(st.st_mtime),
             'mode': 0o040755,
             'custom_icon': is_root,
+            'is_bundle': name.endswith('.app'),
         }
         self.items.append(folder_item)
 
@@ -317,14 +323,16 @@ class HFSPlusBuilder:
                 cnid = item['cnid']
                 name = item['name']
                 mtime = item['mtime']
-                # HFS+ case-folding FastUnicodeCompare key sort order
-                name_sort = [ord(c.lower()) for c in name]
+                # HFS+ FastUnicodeCompare case-folding sort order (uppercase folds letters to 65..90 < '_' 95)
+                name_sort = hfs_fast_unicode_sort_key(name)
                 kbytes = cat_key(p_cnid, name)
 
                 if item['type'] == 'folder':
                     finfo = bytearray(16)
                     if item.get('custom_icon'):
                         struct.pack_into('>H', finfo, 8, 0x0400)
+                    elif item.get('is_bundle'):
+                        struct.pack_into('>H', finfo, 8, 0x2000)
                     bsd = struct.pack('>IIBBHI', 99, 99, 0, 0, item['mode'], 0)
                     val = struct.pack(
                         '>hHIIIIIII16s16s16sII',
@@ -430,112 +438,10 @@ class HFSPlusBuilder:
         parts = [bytes(b0), bytes(b1), ext_btree, cat_btree] + self.data_chunks + [b'\x00' * (pad_free_blocks * BLOCK_SIZE), bytes(alt_b)]
         return b''.join(parts)
 
-def wrap_in_udif_udzo_dmg(hfs_bytes):
-    # Wraps the HFS+ partition bytes into an Apple UDIF UDZO (zlib-compressed) .dmg image
-    # with a valid 'mish' blkx descriptor table, XML resource-fork plist, and 512-byte 'koly' trailer.
-    total_sectors = len(hfs_bytes) // 512
-    chunk_sectors = 2048 # 1 MB per compressed chunk
-    compressed_stream = bytearray()
-    runs = []
-
-    # First run: comment / start marker (0x80000004)
-    runs.append((0x80000004, 0, 0, 0, 0))
-
-    sector_cursor = 0
-    while sector_cursor < total_sectors:
-        scount = min(chunk_sectors, total_sectors - sector_cursor)
-        raw_slice = hfs_bytes[sector_cursor * 512 : (sector_cursor + scount) * 512]
-        if any(raw_slice):
-            comp = zlib.compress(raw_slice, 6)
-            coff = len(compressed_stream)
-            compressed_stream.extend(comp)
-            runs.append((0x80000005, sector_cursor, scount, coff, len(comp)))
-        else:
-            # Zero-fill run (0x00000002)
-            runs.append((0x00000002, sector_cursor, scount, 0, 0))
-        sector_cursor += scount
-
-    # End marker run (0xFFFFFFFF)
-    runs.append((0xFFFFFFFF, total_sectors, 0, len(compressed_stream), 0))
-
-    part_crc = zlib.crc32(hfs_bytes) & 0xFFFFFFFF
-    checksum_struct = struct.pack('>II', 2, 32) + struct.pack('>I', part_crc) + b'\x00' * 124
-
-    mish_header = struct.pack(
-        '>4sIQQQIIIIIIII',
-        b'mish',
-        1,
-        0,
-        total_sectors,
-        0,
-        2048,
-        0,
-        0, 0, 0, 0, 0, 0
-    ) + checksum_struct + struct.pack('>I', len(runs))
-    assert len(mish_header) == 204, f"mish_header size {len(mish_header)} != 204"
-
-    run_blobs = [struct.pack('>IIQQQ', rtype, 0, snum, scnt, boff, blen) if False else struct.pack('>IIQQQQ', rtype, 0, snum, scnt, boff, blen) for (rtype, snum, scnt, boff, blen) in runs]
-    mish_data = mish_header + b''.join(run_blobs)
-
-    plist_dict = {
-        'resource-fork': {
-            'blkx': [
-                {
-                    'Attributes': '0x0050',
-                    'CFName': 'AuraSense (Apple_HFS : 0)',
-                    'Data': mish_data,
-                    'ID': '-1',
-                    'Name': 'AuraSense (Apple_HFS : 0)',
-                }
-            ],
-            'plst': [
-                {
-                    'Attributes': '0x0050',
-                    'Data': b'\x00' * 1024,
-                    'ID': '0',
-                    'Name': '',
-                }
-            ],
-        }
-    }
-    xml_bytes = plistlib.dumps(plist_dict, fmt=plistlib.FMT_XML)
-
-    data_fork_len = len(compressed_stream)
-    xml_offset = data_fork_len
-    xml_len = len(xml_bytes)
-
-    master_crc_input = struct.pack('>I', part_crc)
-    master_crc = zlib.crc32(master_crc_input) & 0xFFFFFFFF
-
-    koly = bytearray(512)
-    struct.pack_into(
-        '>4sIIQQQQQQII',
-        koly, 0,
-        b'koly',
-        4,
-        512,
-        1, # Flags: flattened read-only
-        0, # RunningDataForkOffset
-        0, # DataForkOffset
-        data_fork_len,
-        0, # RsrcForkOffset
-        0, # RsrcForkLength
-        0, # SegmentNumber
-        1  # SegmentCount
-    )
-    # Offset 216 (0xD8): XMLOffset (8), XMLLength (8)
-    struct.pack_into('>QQ', koly, 216, xml_offset, xml_len)
-    # Offset 352 (0x160): Master Checksum (type=2, size=32, crc32)
-    struct.pack_into('>III', koly, 352, 2, 32, master_crc)
-    # Offset 488 (0x1E8): ImageVariant (1), SectorCount (8)
-    struct.pack_into('>IQ', koly, 488, 1, total_sectors)
-
-    return bytes(compressed_stream) + xml_bytes + bytes(koly)
-
 if __name__ == '__main__':
     staging = sys.argv[1]
     out_dmg = sys.argv[2]
-    write_custom_ds_store(os.path.join(staging, '.DS_Store'))
+    write_custom_ds_store(os.path.join(staging, '.DS_Store'), bg_dir_cnid=16, bg_file_cnid=17)
     builder = HFSPlusBuilder("AuraSense")
     builder.add_tree(staging)
     vol_bytes = builder.build_volume_bytes()

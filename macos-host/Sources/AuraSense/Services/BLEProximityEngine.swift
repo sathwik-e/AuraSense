@@ -53,7 +53,14 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
     @AppStorage("aurasense.playSoundEffects") public var playSoundEffects: Bool = true
     @AppStorage("aurasense.onlyShowNamedDevices") public var onlyShowNamedDevices: Bool = false
     @AppStorage("aurasense.launchAtLogin") public var launchAtLogin: Bool = false
-    @AppStorage("aurasense.hasCompletedOnboarding") public var hasCompletedOnboarding: Bool = false
+    @AppStorage("aurasense.v101.hasCompletedGuidedSetup") public var hasCompletedOnboarding: Bool = false
+
+    public var needsGuidedSetup: Bool {
+        !hasCompletedOnboarding ||
+        !MacLockUnlockController.shared.isAccessibilityTrusted ||
+        !KeychainManager.shared.hasStoredPassword() ||
+        selectedDeviceID.isEmpty
+    }
 
     // MARK: - Published Runtime State
 
@@ -111,11 +118,18 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
         super.init()
         loadInitialActivityLog()
         centralManager = CBCentralManager(delegate: nil, queue: .main, options: [
-            CBCentralManagerOptionShowPowerAlertKey: false
+            CBCentralManagerOptionShowPowerAlertKey: true
         ])
         centralManager.delegate = self
         startTimers()
         evaluateProximityState()
+    }
+
+    public func promptForBluetoothPermission() {
+        centralManager = CBCentralManager(delegate: self, queue: .main, options: [
+            CBCentralManagerOptionShowPowerAlertKey: true
+        ])
+        startScanning()
     }
 
     // MARK: - 10-Second Desk Signal Calibration Optimizer
