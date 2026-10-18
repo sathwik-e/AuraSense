@@ -5,11 +5,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CRATE_DIR="$(cd "${PROJECT_ROOT}/.." && pwd)"
 RUST_OUT_DIR="${CRATE_DIR}"
-RELEASES_DIR="${CRATE_DIR}/releases/v0.1"
+RELEASES_DIR="${CRATE_DIR}/releases/v1.0"
 BUILD_DIR="${PROJECT_ROOT}/build"
 STAGING_DIR="${BUILD_DIR}/dmg_staging"
 
-echo "==> [1/6] Generating AuraSense icons and custom DMG installer artwork..."
+echo "==> [1/6] Generating AuraSense v1.0 Neon Orbit Eclipse icons and DMG artwork..."
 cd "${PROJECT_ROOT}"
 swiftc Scripts/generate_assets.swift -o /tmp/aurasense_asset_gen
 /tmp/aurasense_asset_gen
@@ -49,7 +49,7 @@ codesign --force --deep --sign - "${INSTALLER_BUNDLE}"
 rm -rf "${RUST_OUT_DIR}/AuraSense.app"
 cp -R "${APP_BUNDLE}" "${RUST_OUT_DIR}/AuraSense.app"
 
-echo "==> [4/6] Preparing custom-vibe DMG staging directory..."
+echo "==> [4/6] Preparing DMG staging directory..."
 rm -rf "${STAGING_DIR}"
 mkdir -p "${STAGING_DIR}/.background"
 
@@ -61,21 +61,22 @@ cp "${PROJECT_ROOT}/Resources/dmg_background@2x.png" "${STAGING_DIR}/.background
 cp "${PROJECT_ROOT}/Resources/AppIcon.icns" "${STAGING_DIR}/.VolumeIcon.icns"
 SetFile -a C "${STAGING_DIR}" 2>/dev/null || true
 
-echo "==> [5/6] Building customized AuraSense.dmg installer..."
+echo "==> [5/6] Building AuraSense.dmg installer..."
 DMG_PATH="${RUST_OUT_DIR}/AuraSense.dmg"
 rm -f "${DMG_PATH}"
 python3 "${PROJECT_ROOT}/Scripts/create_dmg_image.py" "${STAGING_DIR}" "${DMG_PATH}"
 
-echo "==> [6/6] Syncing release bundles into releases/v0.1..."
+echo "==> [6/6] Syncing release bundles into releases/v1.0..."
 rm -rf "${BUILD_DIR}"
+rm -rf "${CRATE_DIR}/releases/v0.1"
 mkdir -p "${RELEASES_DIR}"
 rm -rf "${RELEASES_DIR}/AuraSense.app"
 cp -R "${RUST_OUT_DIR}/AuraSense.app" "${RELEASES_DIR}/AuraSense.app"
 cp -f "${DMG_PATH}" "${RELEASES_DIR}/AuraSense.dmg"
-cp -f "${DMG_PATH}" "${RELEASES_DIR}/AuraSense-0.1.dmg"
+cp -f "${DMG_PATH}" "${RELEASES_DIR}/AuraSense-1.0.dmg"
 cd "${RELEASES_DIR}"
 rm -f "${RELEASES_DIR}/AuraSense.app.zip"
 zip -r -y -q "${RELEASES_DIR}/AuraSense.app.zip" "AuraSense.app"
 
-echo "==> Build & packaging complete!"
-ls -lh "${RUST_OUT_DIR}/AuraSense.dmg" "${RELEASES_DIR}/AuraSense.dmg" "${RELEASES_DIR}/AuraSense.app.zip"
+echo "==> Build & packaging v1.0 complete!"
+ls -lh "${RUST_OUT_DIR}/AuraSense.dmg" "${RELEASES_DIR}/AuraSense.dmg" "${RELEASES_DIR}/AuraSense-1.0.dmg" "${RELEASES_DIR}/AuraSense.app.zip"

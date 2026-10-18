@@ -1,21 +1,23 @@
-# AuraSense 0.1 Release Notes
+# AuraSense v1.0 Release Notes
 
-## Summary
+## What's New in v1.0
 
-AuraSense 0.1 is the initial release of the Rust-based Bluetooth Low Energy (BLE) proximity locking and Accessibility auto-unlocking system for macOS. It monitors the RSSI signal strength of a paired Bluetooth device to automatically unlock your Mac when the device enters range and lock the screen when the device leaves range.
+- **Neon Orbit Eclipse Identity and Typography**: Updated app icon, DMG installer window, dashboard, and mobile web trigger with the Neon Orbit Eclipse emblem and `Λ U R Λ S E N S E` geometric typography.
+- **Eclipse + Proximity Orbit Menu Bar Icon**: Custom macOS template menu bar icon combining an inner solar/lunar eclipse crescent with an outer BLE proximity orbit ring and signal node that adapts to in-range, grace countdown, calibrating, and locked states.
+- **Instant Auto-Fill on Browser Open**: Opening `http://<mac-ip>:8765/api/v1/faceid-autofill` or `http://<mac-ip>:8765/faceid` immediately wakes connected displays and fills the active macOS password prompt on page load.
+- **10-Second Desk Signal Calibration**: Samples resting BLE RSSI on your desk for 10 seconds and automatically configures unlock and lock thresholds.
+- **External Monitor Display Wake**: Sends active DisplayPort, HDMI, and USB-C wake signals before entering credentials.
 
-## Key Capabilities in 0.1
+## Quick Setup
 
-- **Rust Proximity Engine (`aurasense-rs`)**: Implements a 1D Kalman and Exponential Moving Average (EMA) RSSI filter, dual-threshold hysteresis deadband, departure grace countdown, and Apple Continuity (`0x004C` type `0x10`) packet inspection.
-- **Menu-Bar-Only Operation**: Displays a persistent status icon in the macOS menu bar and automatically hides the Dock icon (`NSApplication.ActivationPolicy.accessory`) whenever the main configuration window is closed.
-- **10-Second Desk Signal Calibration**: Samples BLE RSSI on your desk for 10 seconds to record the baseline signal strength and standard deviation, automatically calculating optimal unlock and lock thresholds, smoothing factor, and grace period.
-- **External Monitor Display Input Wake**: Detects connected external monitors via CoreGraphics (`CGGetActiveDisplayList`) and triggers `IOPMAssertionDeclareUserActivity`, `IODisplayWrangler`, `caffeinate`, and an external display coordinate cursor wake pulse before entering credentials.
-- **iCloud Keychain and System Prompt Auto-Fill**:
-  - Prioritizes the local HTTP `POST /api/v1/faceid-autofill` endpoint for iOS Home Screen Shortcuts.
-  - Serves an unlocked mobile web trigger page at `http://<mac-ip>:8765/faceid`.
-  - Provides global on-demand keyboard shortcuts (`Control+Option+Command+Space` to type the stored password and `Control+Option+Command+V` to copy the password to a concealed clipboard that automatically clears after 4 seconds).
-  - Includes a one-click macOS `login.keychain-db` timeout optimizer.
+1. Open `AuraSense.dmg` and drag `AuraSense.app` to `Applications`.
+2. Grant **Accessibility** and **Bluetooth** permissions when prompted.
+3. Save your Mac password in **Security & Keychain** and run the **10s Desk Signal Scan**.
+4. On your iPhone, open `http://192.168.1.8:8765/api/v1/faceid-autofill` in Safari and tap **Share > Add to Home Screen** for one-tap password auto-fill.
 
 ## Release Assets
 
-- `AuraSense.dmg` / `releases/v0.1/AuraSense-0.1.dmg`: Custom-styled macOS Disk Image installer containing `AuraSense.app`, `Install AuraSense.app`, and the `Applications` symlink.
+- `releases/v1.0/AuraSense.dmg`
+- `releases/v1.0/AuraSense-1.0.dmg`
+- `releases/v1.0/AuraSense.app`
+- `releases/v1.0/AuraSense.app.zip`

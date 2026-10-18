@@ -9,11 +9,10 @@ public struct FaceIdKeychainBridgeView: View {
 
     public var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 18) {
                 headerStatusCard
-                prioritizedPostShortcutCard
-                unlockedWebpageTriggerCard
-                proximityGuardAndDetectorCard
+                simpleInstructionsCard
+                diagnosticsCard
             }
             .padding(24)
         }
@@ -24,26 +23,19 @@ public struct FaceIdKeychainBridgeView: View {
     private var headerStatusCard: some View {
         AuraGlassCard(padding: 20, borderColor: AuraTheme.cyanGlow.opacity(0.45)) {
             HStack(spacing: 16) {
-                ZStack {
-                    Circle()
-                        .fill(AuraTheme.cyanGlow.opacity(0.18))
-                        .frame(width: 52, height: 52)
-                    Image(systemName: "bolt.horizontal.circle.fill")
-                        .font(.system(size: 26, weight: .semibold))
-                        .foregroundStyle(AuraTheme.cyanGlow)
-                }
+                AuraEclipseLogoView(size: 48)
 
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 10) {
-                        Text("iPhone POST Trigger & Unlocked Web Page Bridge")
-                            .font(.system(size: 18, weight: .bold, design: .rounded))
+                        Text("Instant Browser & POST Password Auto-Fill")
+                            .font(.system(size: 17, weight: .bold, design: .rounded))
                         AuraStatusPill(
-                            title: "Active on Port \(bridge.relayPort)",
+                            title: "Port \(bridge.relayPort) Active",
                             symbol: "checkmark.shield.fill",
                             color: AuraTheme.emeraldGlow
                         )
                     }
-                    Text("Prioritizes POST \(bridge.shortcutWebhookURL) and serves an unlocked instant-fill webpage at \(bridge.passkeyRelayURL).")
+                    Text("Opening \(bridge.shortcutWebhookURL) or \(bridge.passkeyRelayURL) immediately fills your Mac password.")
                         .font(.system(size: 12.5))
                         .foregroundStyle(.secondary)
                 }
@@ -57,40 +49,27 @@ public struct FaceIdKeychainBridgeView: View {
         }
     }
 
-    // MARK: - Prioritized Method #2: POST Endpoint + Home Screen Shortcut
+    // MARK: - Simple Instructions Card
 
-    private var prioritizedPostShortcutCard: some View {
-        AuraGlassCard(padding: 20, borderColor: AuraTheme.emeraldGlow.opacity(0.45)) {
+    private var simpleInstructionsCard: some View {
+        AuraGlassCard(padding: 20, borderColor: AuraTheme.emeraldGlow.opacity(0.40)) {
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
-                    Label("Prioritized Method: POST Shortcut on iPhone Home Screen", systemImage: "bolt.shield.fill")
-                        .font(.system(size: 16, weight: .bold, design: .rounded))
-                        .foregroundStyle(AuraTheme.emeraldGlow)
+                    Text("Simple iPhone Setup")
+                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                        .foregroundStyle(AuraTheme.cyanGlow)
                     Spacer()
                     Button {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(bridge.shortcutWebhookURL, forType: .string)
                     } label: {
-                        Label("Copy POST URL", systemImage: "doc.on.doc")
+                        Label("Copy URL", systemImage: "doc.on.doc")
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(AuraTheme.indigoGlow)
                     .controlSize(.small)
-                }
 
-                HStack {
-                    Text("POST")
-                        .font(.system(size: 11, weight: .heavy, design: .monospaced))
-                        .foregroundStyle(.black)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Capsule().fill(AuraTheme.emeraldGlow))
-                    Text(bridge.shortcutWebhookURL)
-                        .font(.system(size: 13, weight: .bold, design: .monospaced))
-                        .foregroundStyle(AuraTheme.cyanGlow)
-                        .textSelection(.enabled)
-                    Spacer()
-                    Button("Open Guide in Browser") {
+                    Button("Open in Browser") {
                         if let url = URL(string: bridge.shortcutWebhookURL) {
                             NSWorkspace.shared.open(url)
                         }
@@ -98,18 +77,27 @@ public struct FaceIdKeychainBridgeView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                 }
+
+                HStack {
+                    Text("AUTO-FILL URL")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(AuraTheme.cyanGlow))
+                    Text(bridge.shortcutWebhookURL)
+                        .font(.system(size: 13, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.white)
+                        .textSelection(.enabled)
+                    Spacer()
+                }
                 .padding(10)
-                .background(RoundedRectangle(cornerRadius: 10).fill(Color.black.opacity(0.28)))
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color.black.opacity(0.32)))
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Add the POST Shortcut to Your iPhone Home Screen:")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(AuraTheme.cyanGlow)
-
-                    stepRow(num: "1", text: "Open the **Shortcuts** app on your iPhone, tap **+** (New Shortcut), and name it **\"Mac Keychain Fill\"**.")
-                    stepRow(num: "2", text: "Tap **Add Action** → search for **\"Get Contents of URL\"** → set the URL to **\(bridge.shortcutWebhookURL)**.")
-                    stepRow(num: "3", text: "Tap the arrow **(>)** next to the URL and change **Method** from `GET` to **`POST`**.")
-                    stepRow(num: "4", text: "Tap the **ⓘ (Info)** or **Share** icon at the bottom → tap **\"Add to Home Screen\"** → tap **Add**.")
+                VStack(alignment: .leading, spacing: 10) {
+                    stepRow(num: "1", text: "Open **\(bridge.shortcutWebhookURL)** (or **\(bridge.passkeyRelayURL)**) in Safari on your iPhone. Your Mac password auto-fills as soon as the page opens.")
+                    stepRow(num: "2", text: "Tap **Share > Add to Home Screen** in Safari to save it as a one-tap icon on your iPhone.")
+                    stepRow(num: "3", text: "Optional iOS Shortcut: In the **Shortcuts** app, add **Get Contents of URL** with **\(bridge.shortcutWebhookURL)**, set Method to **POST**, and add it to your Home Screen.")
                 }
                 .padding(12)
                 .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.05)))
@@ -117,48 +105,15 @@ public struct FaceIdKeychainBridgeView: View {
         }
     }
 
-    // MARK: - Unlocked Webpage Trigger Card
+    // MARK: - Diagnostics Card
 
-    private var unlockedWebpageTriggerCard: some View {
-        AuraGlassCard(padding: 18) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Label("Unlocked iPhone Webpage Trigger: \(bridge.passkeyRelayURL)", systemImage: "iphone.radiowaves.left.and.right")
-                        .font(.system(size: 14, weight: .bold, design: .rounded))
-                    Spacer()
-                    Button("Copy /faceid URL") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(bridge.passkeyRelayURL, forType: .string)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-
-                    Button("Open Webpage") {
-                        if let url = URL(string: bridge.passkeyRelayURL) {
-                            NSWorkspace.shared.open(url)
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(AuraTheme.cyanGlow)
-                    .controlSize(.small)
-                }
-
-                Text("Open \(bridge.passkeyRelayURL) directly on your iPhone with zero app locking — just tap '⚡ Fill Mac Password Now (POST)' to immediately enter your password on your Mac.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    // MARK: - Proximity Guard & Live Detector Card
-
-    private var proximityGuardAndDetectorCard: some View {
+    private var diagnosticsCard: some View {
         AuraGlassCard(padding: 18) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Password Fill Diagnostics")
-                            .font(.system(size: 15, weight: .bold, design: .rounded))
+                        Text("Status")
+                            .font(.system(size: 14, weight: .bold, design: .rounded))
                         Text(bridge.lastBridgeEvent)
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
@@ -166,10 +121,10 @@ public struct FaceIdKeychainBridgeView: View {
                     Spacer()
                     Button {
                         Task { @MainActor in
-                            _ = await bridge.autoFillActiveKeychainPrompt(triggerSource: "Manual POST Diagnostic")
+                            _ = await bridge.autoFillActiveKeychainPrompt(triggerSource: "Manual Test")
                         }
                     } label: {
-                        Label("Test POST Password Fill Now", systemImage: "key.fill")
+                        Label("Test Auto-Fill Now", systemImage: "key.fill")
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(AuraTheme.indigoGlow)
@@ -179,9 +134,9 @@ public struct FaceIdKeychainBridgeView: View {
 
                 Toggle(isOn: $bridge.requireDeviceInRangeForPost) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Optional: Only Enter Password When Selected BLE Device Is Within Range")
+                        Text("Only Fill When Bound BLE Device Is in Range")
                             .font(.system(size: 13, weight: .medium))
-                        Text("Disabled by default so the iPhone webpage button always works without locking or blocking.")
+                        Text("Off by default so opening the URL on your iPhone always works immediately.")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }

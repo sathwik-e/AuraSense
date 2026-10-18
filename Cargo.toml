@@ -1,9 +1,9 @@
 [package]
 name = "aurasense-rs"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 authors = ["AuraSense Project"]
-description = "Low-latency Rust BLE proximity lock/unlock daemon and iCloud Keychain Accessibility auto-filler for macOS"
+description = "Rust BLE proximity lock/unlock daemon and instant Keychain auto-filler for macOS"
 license = "MIT"
 
 [dependencies]

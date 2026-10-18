@@ -4,7 +4,7 @@ public enum DashboardSection: String, CaseIterable, Identifiable {
     case radar = "Aura Radar"
     case devices = "BLE Devices"
     case thresholds = "Range & Thresholds"
-    case faceIdBridge = "Face ID Keychain"
+    case faceIdBridge = "Instant Auto-Fill"
     case security = "Security & Keychain"
     case activity = "Activity Log"
 
@@ -15,7 +15,7 @@ public enum DashboardSection: String, CaseIterable, Identifiable {
         case .radar: return "dot.radiowaves.left.and.right"
         case .devices: return "iphone.radiowaves.left.and.right"
         case .thresholds: return "slider.horizontal.below.waveform"
-        case .faceIdBridge: return "faceid"
+        case .faceIdBridge: return "bolt.horizontal.circle.fill"
         case .security: return "lock.shield.fill"
         case .activity: return "clock.arrow.circlepath"
         }
@@ -33,22 +33,13 @@ public struct MainDashboardView: View {
     public var body: some View {
         NavigationSplitView {
             VStack(alignment: .leading, spacing: 14) {
-                // Brand Identity Header in Sidebar
+                // Brand Identity Header in Sidebar using Neon Orbit Eclipse & Λ U R Λ S E N S E Typography
                 HStack(spacing: 10) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(AuraTheme.auraLinearGradient)
-                            .frame(width: 34, height: 34)
-                            .shadow(color: AuraTheme.cyanGlow.opacity(0.35), radius: 6)
-                        Image(systemName: "lock.open.rotation")
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(.white)
-                    }
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("AuraSense")
-                            .font(.system(size: 15, weight: .bold, design: .rounded))
-                        Text("BLE Proximity Lock")
-                            .font(.system(size: 11))
+                    AuraEclipseLogoView(size: 36)
+                    VStack(alignment: .leading, spacing: 2) {
+                        AuraBrandWordmarkView(size: 13, tracking: 2.2)
+                        Text("BLE Proximity v1.0")
+                            .font(.system(size: 10.5, weight: .medium))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -78,7 +69,7 @@ public struct MainDashboardView: View {
                     Button {
                         showInstallerSheet = true
                     } label: {
-                        Label("Setup & Installer Guide", systemImage: "sparkles")
+                        Label("Quick Setup Guide", systemImage: "slider.horizontal.3")
                             .font(.system(size: 12, weight: .medium))
                             .frame(maxWidth: .infinity)
                     }
@@ -87,7 +78,7 @@ public struct MainDashboardView: View {
                 }
                 .padding(12)
             }
-            .navigationSplitViewColumnWidth(min: 205, ideal: 220, max: 250)
+            .navigationSplitViewColumnWidth(min: 215, ideal: 230, max: 260)
         } detail: {
             Group {
                 switch selectedSection {
@@ -109,7 +100,7 @@ public struct MainDashboardView: View {
             .background(
                 LinearGradient(
                     colors: [
-                        AuraTheme.deepMidnight.opacity(0.32),
+                        AuraTheme.deepMidnight.opacity(0.45),
                         Color(nsColor: .windowBackgroundColor)
                     ],
                     startPoint: .topLeading,
@@ -136,9 +127,9 @@ public struct MainDashboardView: View {
                     Button {
                         showInstallerSheet = true
                     } label: {
-                        Label("Setup Wizard", systemImage: "wand.and.stars")
+                        Label("Setup Guide", systemImage: "slider.horizontal.3")
                     }
-                    .help("Open AuraSense Custom Installer & Setup Assistant")
+                    .help("Open AuraSense Setup Guide")
                 }
             }
         }

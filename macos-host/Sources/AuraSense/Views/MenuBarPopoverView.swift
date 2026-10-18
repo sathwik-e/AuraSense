@@ -1,9 +1,7 @@
 import SwiftUI
 import AppKit
 
-/// Sleek macOS Control Center-inspired MenuBarExtra popover window.
-/// Includes 10-second Desk Signal Calibration, External Monitor Wake status,
-/// Instant Keychain Password Fill (⌃⌥⌘Space / 4s Paste), and Menu-Bar-Only Dock hiding.
+/// MenuBarExtra popover window featuring the Neon Orbit Eclipse emblem and Λ U R Λ S E N S E typography.
 public struct MenuBarPopoverView: View {
     @ObservedObject var engine = BLEProximityEngine.shared
     @ObservedObject var lockController = MacLockUnlockController.shared
@@ -16,21 +14,13 @@ public struct MenuBarPopoverView: View {
         let stateColor = AuraTheme.stateAccentColor(for: engine.proximityState)
 
         VStack(alignment: .leading, spacing: 12) {
-            // Top Header
+            // Top Header with Eclipse Logo & Λ U R Λ S E N S E Typography
             HStack(spacing: 12) {
-                ZStack {
-                    Circle()
-                        .fill(stateColor.opacity(0.18))
-                        .frame(width: 38, height: 38)
-                    Image(systemName: engine.proximityState.statusSymbol)
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(stateColor)
-                }
+                AuraEclipseLogoView(size: 38)
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
-                        Text("AuraSense")
-                            .font(.system(size: 14, weight: .bold, design: .rounded))
+                        AuraBrandWordmarkView(size: 12.5, tracking: 2.0)
                         if lockController.hasExternalMonitorConnected {
                             Image(systemName: "display.2")
                                 .font(.system(size: 11, weight: .semibold))
@@ -130,7 +120,7 @@ public struct MenuBarPopoverView: View {
                 .controlSize(.small)
             }
 
-            // Instant Keychain Fill Actions (Simpler, Non-Fickle Alternatives)
+            // Instant Keychain Fill Actions
             HStack(spacing: 8) {
                 Button {
                     Task { @MainActor in
@@ -215,7 +205,7 @@ public struct MenuBarPopoverView: View {
                     openWindow(id: "installer-wizard")
                 } label: {
                     HStack {
-                        Label("10s Calibration & Setup Guide…", systemImage: "sparkles")
+                        Label("Quick Setup Guide…", systemImage: "slider.horizontal.3")
                         Spacer()
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -242,6 +232,6 @@ public struct MenuBarPopoverView: View {
             }
         }
         .padding(16)
-        .frame(width: 325)
+        .frame(width: 330)
     }
 }

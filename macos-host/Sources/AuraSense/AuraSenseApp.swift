@@ -4,7 +4,7 @@ import AppKit
 /// Manages macOS Dock icon visibility (`NSApplication.ActivationPolicy`).
 /// When the main Dashboard or Installer window is open, AuraSense uses `.regular` policy;
 /// as soon as the window is closed, it switches to `.accessory` so the Dock icon disappears
-/// and AuraSense lives quietly in the macOS Menu Bar with just a clean icon.
+/// and AuraSense lives quietly in the macOS Menu Bar with its Eclipse + Proximity Orbit icon.
 @MainActor
 public final class DockVisibilityManager: ObservableObject {
     public static let shared = DockVisibilityManager()
@@ -63,7 +63,6 @@ public final class DockVisibilityManager: ObservableObject {
 
 public final class AuraSenseAppDelegate: NSObject, NSApplicationDelegate {
     public func applicationDidFinishLaunching(_ notification: Notification) {
-        // Ensure FaceIdKeychainBridgeService starts listening on port 8765 immediately
         _ = FaceIdKeychainBridgeService.shared
         MacLockUnlockController.shared.registerGlobalInstantFillShortcuts()
 
@@ -155,7 +154,7 @@ public struct AuraSenseApp: App {
                 }
                 .keyboardShortcut(" ", modifiers: [.control, .option, .command])
 
-                Button("Copy Password for 4s Transient Paste (⌃⌥⌘V)") {
+                Button("Copy Password for 4s Paste (⌃⌥⌘V)") {
                     lockController.copyPasswordTemporarilyForPaste()
                 }
                 .keyboardShortcut("v", modifiers: [.control, .option, .command])
@@ -180,36 +179,24 @@ public struct AuraSenseApp: App {
         .windowResizability(.contentSize)
         .windowStyle(.hiddenTitleBar)
 
-        // Clean icon-only MenuBarExtra item in the macOS Menu Bar
-        MenuBarExtra("AuraSense", systemImage: menuBarSymbolName) {
+        // Custom Eclipse + Proximity Orbit MenuBarExtra icon
+        MenuBarExtra {
             MenuBarPopoverView()
+        } label: {
+            Image(
+                nsImage: AuraTheme.menuBarEclipseIcon(
+                    state: engine.proximityState,
+                    isCalibrating: engine.isCalibratingDeskSignal,
+                    isPaused: !engine.monitoringEnabled || engine.pauseUntilDate != nil
+                )
+            )
+            .accessibilityLabel("AuraSense")
         }
         .menuBarExtraStyle(.window)
 
         Settings {
             SecuritySettingsView()
                 .frame(width: 680, height: 560)
-        }
-    }
-
-    private var menuBarSymbolName: String {
-        if engine.isCalibratingDeskSignal {
-            return "dot.radiowaves.up.forward"
-        }
-        if !engine.monitoringEnabled || engine.pauseUntilDate != nil {
-            return "pause.circle"
-        }
-        switch engine.proximityState {
-        case .unlockedInRange:
-            return "sensor.tag.radiowaves.forward.fill"
-        case .gracePeriodCountdown:
-            return "timer"
-        case .lockedOutOfRange:
-            return "lock.shield.fill"
-        case .paused:
-            return "pause.circle"
-        case .unconfigured:
-            return "sensor.tag.radiowaves.forward"
         }
     }
 }

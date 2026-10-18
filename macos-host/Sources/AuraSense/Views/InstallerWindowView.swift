@@ -1,9 +1,8 @@
 import SwiftUI
 import AppKit
 
-/// Custom-vibe AuraSense Installer & First-Run Setup Assistant window.
-/// Includes one-click /Applications installation, Accessibility & BLE permissions,
-/// Keychain password setup, and the 10-Second Desk Signal Calibration Scanner.
+/// AuraSense v1.0 Setup Assistant window featuring the Neon Orbit Eclipse logo,
+/// Λ U R Λ S E N S E typography, and simple 3-step setup instructions.
 public struct InstallerWindowView: View {
     @ObservedObject var engine = BLEProximityEngine.shared
     @ObservedObject var lockController = MacLockUnlockController.shared
@@ -35,20 +34,19 @@ public struct InstallerWindowView: View {
                         .strokeBorder(
                             LinearGradient(
                                 colors: [
-                                    AuraTheme.cyanGlow.opacity(0.28 - Double(index) * 0.05),
-                                    AuraTheme.indigoGlow.opacity(0.22 - Double(index) * 0.04),
-                                    AuraTheme.emeraldGlow.opacity(0.14)
+                                    AuraTheme.cyanGlow.opacity(0.24 - Double(index) * 0.05),
+                                    AuraTheme.indigoGlow.opacity(0.20 - Double(index) * 0.04)
                                 ],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
                             ),
-                            lineWidth: 1.5
+                            lineWidth: 1.4
                         )
                         .frame(
                             width: CGFloat(220 + index * 130),
                             height: CGFloat(220 + index * 130)
                         )
-                        .scaleEffect(ringPulse ? 1.04 : 0.96)
+                        .scaleEffect(ringPulse ? 1.03 : 0.97)
                         .animation(
                             .easeInOut(duration: 2.8 + Double(index) * 0.4).repeatForever(autoreverses: true),
                             value: ringPulse
@@ -77,7 +75,7 @@ public struct InstallerWindowView: View {
             }
             .padding(26)
         }
-        .frame(width: 700, height: 560)
+        .frame(width: 700, height: 550)
         .preferredColorScheme(.dark)
         .onAppear {
             ringPulse = true
@@ -93,42 +91,20 @@ public struct InstallerWindowView: View {
 
     private var heroHeader: some View {
         HStack(spacing: 16) {
-            ZStack {
-                Circle()
-                    .fill(
-                        RadialGradient(
-                            colors: [AuraTheme.cyanGlow.opacity(0.45), AuraTheme.indigoGlow.opacity(0.20), .clear],
-                            center: .center,
-                            startRadius: 4,
-                            endRadius: 36
-                        )
-                    )
-                    .frame(width: 64, height: 64)
+            AuraEclipseLogoView(size: 56)
 
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(AuraTheme.auraLinearGradient)
-                    .frame(width: 52, height: 52)
-                    .shadow(color: AuraTheme.cyanGlow.opacity(0.45), radius: 12)
-
-                Image(systemName: "lock.open.rotation")
-                    .font(.system(size: 24, weight: .bold))
-                    .foregroundStyle(.white)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text("AuraSense Setup & 10s Desk Calibration")
-                        .font(.system(size: 22, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 10) {
+                    AuraBrandWordmarkView(size: 20, tracking: 3.6)
                     AuraStatusPill(
-                        title: "v1.2 Menu Bar",
-                        symbol: "menubar.rectangle",
+                        title: "v1.0",
+                        symbol: "moon.circle.fill",
                         color: AuraTheme.cyanGlow
                     )
                 }
-                Text("Lives quietly in your Menu Bar • Wakes external monitors • Auto-calibrates desk RSSI in 10 seconds")
+                Text("Menu Bar BLE Proximity Lock, External Monitor Wake & Instant Password Fill")
                     .font(.system(size: 12.5))
-                    .foregroundStyle(.white.opacity(0.72))
+                    .foregroundStyle(.white.opacity(0.74))
             }
             Spacer()
         }
@@ -138,9 +114,9 @@ public struct InstallerWindowView: View {
 
     private var stepIndicatorPills: some View {
         HStack(spacing: 12) {
-            stepBadge(index: 0, title: "1. Install App Bundle", icon: "square.and.arrow.down.on.square.fill")
-            stepBadge(index: 1, title: "2. Accessibility & Monitor", icon: "hand.raised.shield.fill")
-            stepBadge(index: 2, title: "3. 10s Desk Calibration", icon: "scope")
+            stepBadge(index: 0, title: "1. Install App", icon: "square.and.arrow.down.on.square.fill")
+            stepBadge(index: 1, title: "2. Grant Accessibility", icon: "hand.raised.shield.fill")
+            stepBadge(index: 2, title: "3. Password & 10s Scan", icon: "scope")
         }
     }
 
@@ -183,15 +159,7 @@ public struct InstallerWindowView: View {
             VStack(spacing: 18) {
                 HStack(spacing: 28) {
                     VStack(spacing: 8) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                                .fill(AuraTheme.auraLinearGradient)
-                                .frame(width: 72, height: 72)
-                                .shadow(color: AuraTheme.cyanGlow.opacity(0.4), radius: 14)
-                            Image(systemName: "sensor.tag.radiowaves.forward.fill")
-                                .font(.system(size: 30, weight: .bold))
-                                .foregroundStyle(.white)
-                        }
+                        AuraEclipseLogoView(size: 72)
                         Text("AuraSense.app")
                             .font(.system(size: 13, weight: .bold, design: .rounded))
                     }
@@ -204,7 +172,7 @@ public struct InstallerWindowView: View {
                                     .foregroundStyle(AuraTheme.cyanGlow.opacity(0.35 + Double(i) * 0.15))
                             }
                         }
-                        Text(isInstalledInApplications ? "Installed in /Applications" : "One-Click or Drag in DMG")
+                        Text(isInstalledInApplications ? "Installed in /Applications" : "Copy to /Applications")
                             .font(.system(size: 11, weight: .medium, design: .rounded))
                             .foregroundStyle(.secondary)
                     }
@@ -212,15 +180,15 @@ public struct InstallerWindowView: View {
                     VStack(spacing: 8) {
                         ZStack {
                             RoundedRectangle(cornerRadius: 20, style: .continuous)
-                                .fill(Color.blue.opacity(0.22))
+                                .fill(Color.blue.opacity(0.18))
                                 .frame(width: 72, height: 72)
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 20, style: .continuous)
-                                        .strokeBorder(Color.blue.opacity(0.55), lineWidth: 1.5)
+                                        .strokeBorder(AuraTheme.cyanGlow.opacity(0.55), lineWidth: 1.5)
                                 )
-                            Image(systemName: "folder.fill.badge.gearshape")
+                            Image(systemName: "folder.fill")
                                 .font(.system(size: 30, weight: .semibold))
-                                .foregroundStyle(Color(red: 0.35, green: 0.68, blue: 1.0))
+                                .foregroundStyle(AuraTheme.cyanGlow)
                         }
                         Text("/Applications")
                             .font(.system(size: 13, weight: .bold, design: .rounded))
@@ -237,7 +205,7 @@ public struct InstallerWindowView: View {
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    Text("When you close the AuraSense window, its Dock icon automatically disappears so it lives quietly in your macOS Menu Bar.")
+                    Text("Click Install below or drag AuraSense.app into Applications. Closing the window hides the Dock icon so AuraSense stays in your Menu Bar.")
                         .font(.system(size: 12.5))
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -249,7 +217,7 @@ public struct InstallerWindowView: View {
                         performCopyToApplications()
                     } label: {
                         Label(
-                            isInstalledInApplications ? "Reinstall to /Applications" : "Install to /Applications Now",
+                            isInstalledInApplications ? "Reinstall to /Applications" : "Install to /Applications",
                             systemImage: isInstalledInApplications ? "checkmark.circle.fill" : "arrow.down.app.fill"
                         )
                         .font(.system(size: 13, weight: .semibold))
@@ -263,7 +231,7 @@ public struct InstallerWindowView: View {
                     Button {
                         NSWorkspace.shared.selectFile("/Applications/AuraSense.app", inFileViewerRootedAtPath: "/Applications")
                     } label: {
-                        Label("Reveal /Applications", systemImage: "folder")
+                        Label("Open /Applications", systemImage: "folder")
                     }
                     .buttonStyle(.bordered)
                 }
@@ -277,7 +245,7 @@ public struct InstallerWindowView: View {
     private var permissionsStepCard: some View {
         AuraGlassCard(padding: 20, borderColor: AuraTheme.indigoGlow.opacity(0.35)) {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Grant Accessibility & External Monitor Wake Permissions")
+                Text("Step 2: Enable Accessibility & Monitor Wake")
                     .font(.system(size: 16, weight: .bold, design: .rounded))
 
                 HStack(spacing: 14) {
@@ -288,22 +256,22 @@ public struct InstallerWindowView: View {
 
                     VStack(alignment: .leading, spacing: 3) {
                         HStack {
-                            Text("Accessibility Permission (Auto-Unlock & ⌃⌥⌘Space Instant Fill)")
+                            Text("Accessibility Permission")
                                 .font(.system(size: 13.5, weight: .semibold))
                             AuraStatusPill(
-                                title: lockController.isAccessibilityTrusted ? "Trusted" : "Not Granted Yet",
+                                title: lockController.isAccessibilityTrusted ? "Granted" : "Required",
                                 symbol: lockController.isAccessibilityTrusted ? "checkmark" : "hand.raised.fill",
                                 color: lockController.isAccessibilityTrusted ? AuraTheme.emeraldGlow : .orange
                             )
                         }
-                        Text("Enables lock screen password typing, external monitor input wake pulses, and global ⌃⌥⌘Space instant fill.")
+                        Text("Allows AuraSense to enter your Mac password on unlock and fill Keychain prompts.")
                             .font(.system(size: 11.5))
                             .foregroundStyle(.secondary)
                     }
 
                     Spacer()
 
-                    Button(lockController.isAccessibilityTrusted ? "Verified" : "Grant Permission…") {
+                    Button(lockController.isAccessibilityTrusted ? "Granted" : "Open Settings…") {
                         lockController.openAccessibilitySettings()
                     }
                     .buttonStyle(.borderedProminent)
@@ -319,18 +287,9 @@ public struct InstallerWindowView: View {
                         .frame(width: 38)
 
                     VStack(alignment: .leading, spacing: 3) {
-                        HStack {
-                            Text("External Monitor DisplayPort / HDMI Input Wake")
-                                .font(.system(size: 13.5, weight: .semibold))
-                            AuraStatusPill(
-                                title: lockController.hasExternalMonitorConnected
-                                    ? "External Monitor Detected (\(lockController.connectedDisplayCount))"
-                                    : "Ready for External Monitor",
-                                symbol: "bolt.horizontal.fill",
-                                color: AuraTheme.cyanGlow
-                            )
-                        }
-                        Text("Sends active IODisplayWrangler, caffeinate, and framebuffer wake signals so external monitors wake and switch input automatically.")
+                        Text("Wake External Monitor Input on Unlock")
+                            .font(.system(size: 13.5, weight: .semibold))
+                        Text("Automatically wakes DisplayPort, HDMI, and USB-C monitors before typing your password.")
                             .font(.system(size: 11.5))
                             .foregroundStyle(.secondary)
                     }
@@ -353,25 +312,24 @@ public struct InstallerWindowView: View {
     private var keychainAndTenSecondDeskCalibrationStepCard: some View {
         AuraGlassCard(padding: 20, borderColor: AuraTheme.emeraldGlow.opacity(0.35)) {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Save Password & Run 10-Second Desk Signal Calibration")
+                Text("Step 3: Save Password & Calibrate Desk Signal (10s)")
                     .font(.system(size: 16, weight: .bold, design: .rounded))
 
-                // Keychain Input Row
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
-                        Label("macOS Login Password (Encrypted in Keychain)", systemImage: "key.fill")
+                        Label("Mac Login Password (Encrypted in Keychain)", systemImage: "key.fill")
                             .font(.system(size: 12.5, weight: .semibold))
                         Spacer()
                         if savedPasswordSuccess {
-                            AuraStatusPill(title: "Saved in Keychain", symbol: "checkmark.circle.fill", color: AuraTheme.emeraldGlow)
+                            AuraStatusPill(title: "Saved", symbol: "checkmark.circle.fill", color: AuraTheme.emeraldGlow)
                         }
                     }
 
                     HStack(spacing: 10) {
-                        SecureField("Enter your Mac login password for auto-unlock…", text: $quickPassword)
+                        SecureField("Enter your Mac login password…", text: $quickPassword)
                             .textFieldStyle(.roundedBorder)
 
-                        Button("Save to Keychain") {
+                        Button("Save Password") {
                             try? KeychainManager.shared.savePassword(quickPassword)
                             savedPasswordSuccess = KeychainManager.shared.hasStoredPassword()
                         }
@@ -383,32 +341,30 @@ public struct InstallerWindowView: View {
 
                 Divider()
 
-                // 10-Second Desk Signal Calibration Box
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        Label("10-Second Desk Signal Calibration & Auto-Optimizer", systemImage: "scope")
+                        Label("10-Second Desk Signal Calibration", systemImage: "scope")
                             .font(.system(size: 13, weight: .bold))
                             .foregroundStyle(AuraTheme.cyanGlow)
                         Spacer()
                         if engine.hasNotedDeskRSSI {
                             AuraStatusPill(
-                                title: "Noted Desk Signal: \(engine.notedDeskRSSI) dBm (±\(String(format: "%.1f", engine.notedDeskJitterDB)) dB)",
+                                title: "Desk RSSI: \(engine.notedDeskRSSI) dBm",
                                 symbol: "checkmark.seal.fill",
                                 color: AuraTheme.emeraldGlow
                             )
                         }
                     }
 
-                    Text(engine.deskCalibrationSummary)
+                    Text("Place your iPhone or Watch on your desk and click Scan to automatically set your unlock and lock range.")
                         .font(.system(size: 11.5))
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
 
                     if engine.isCalibratingDeskSignal {
                         ProgressView(value: engine.deskCalibrationProgress, total: 1.0)
                             .tint(AuraTheme.cyanGlow)
                         HStack {
-                            Text("Keep your device on the desk… (\(engine.deskCalibrationSamplesCollected) samples)")
+                            Text("Sampling desk signal… (\(engine.deskCalibrationSamplesCollected) samples)")
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(AuraTheme.cyanGlow)
                             Spacer()
@@ -420,7 +376,7 @@ public struct InstallerWindowView: View {
                             Button {
                                 engine.startTenSecondDeskCalibration()
                             } label: {
-                                Label("Place Device on Desk & Scan for 10s", systemImage: "waveform.badge.magnifyingglass")
+                                Label("Scan Desk Signal (10s)", systemImage: "waveform.badge.magnifyingglass")
                             }
                             .buttonStyle(.borderedProminent)
                             .tint(AuraTheme.cyanGlow)
@@ -468,7 +424,7 @@ public struct InstallerWindowView: View {
                 Button {
                     withAnimation { currentStep += 1 }
                 } label: {
-                    Label("Continue", systemImage: "arrow.right")
+                    Label("Next", systemImage: "arrow.right")
                         .padding(.horizontal, 8)
                 }
                 .buttonStyle(.borderedProminent)
@@ -479,7 +435,7 @@ public struct InstallerWindowView: View {
                     onComplete?()
                     dismiss()
                 } label: {
-                    Label("Complete Setup", systemImage: "checkmark.seal.fill")
+                    Label("Done", systemImage: "checkmark.seal.fill")
                         .padding(.horizontal, 10)
                 }
                 .buttonStyle(.borderedProminent)
@@ -501,11 +457,11 @@ public struct InstallerWindowView: View {
 
         isInstallingToApplications = true
         installProgress = 0.25
-        installStatusMessage = "Preparing AuraSense.app bundle…"
+        installStatusMessage = "Preparing AuraSense.app…"
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
             installProgress = 0.65
-            installStatusMessage = "Installing to /Applications/AuraSense.app…"
+            installStatusMessage = "Copying to /Applications/AuraSense.app…"
 
             do {
                 let fm = FileManager.default
@@ -516,7 +472,7 @@ public struct InstallerWindowView: View {
                     try fm.copyItem(atPath: bundlePath, toPath: destPath)
                 }
                 installProgress = 1.0
-                installStatusMessage = "Successfully installed AuraSense to /Applications!"
+                installStatusMessage = "Installed AuraSense to /Applications."
                 isInstalledInApplications = true
                 engine.appendLog(
                     kind: .systemState,
@@ -525,7 +481,7 @@ public struct InstallerWindowView: View {
                 )
             } catch {
                 installProgress = 1.0
-                installStatusMessage = "Ready! You can also drag AuraSense.app to Applications in Finder."
+                installStatusMessage = "Drag AuraSense.app to Applications in Finder."
             }
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
