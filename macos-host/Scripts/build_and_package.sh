@@ -9,7 +9,7 @@ RELEASES_DIR="${CRATE_DIR}/releases/v1"
 BUILD_DIR="${PROJECT_ROOT}/build"
 STAGING_DIR="${BUILD_DIR}/dmg_staging"
 
-echo "==> [1/6] Generating AuraSense v1 Neon Orbit Eclipse icons and DMG artwork..."
+echo "==> [1/6] Generating AuraSense v1 Neon Orbit Eclipse icons, Menu Bar template icons, and DMG artwork..."
 cd "${PROJECT_ROOT}"
 swiftc Scripts/generate_assets.swift -o /tmp/aurasense_asset_gen
 /tmp/aurasense_asset_gen
@@ -28,6 +28,8 @@ cp "${BUILD_DIR}/AuraSense" "${APP_BUNDLE}/Contents/MacOS/AuraSense"
 chmod +x "${APP_BUNDLE}/Contents/MacOS/AuraSense"
 cp "${PROJECT_ROOT}/Resources/Info.plist" "${APP_BUNDLE}/Contents/Info.plist"
 cp "${PROJECT_ROOT}/Resources/AppIcon.icns" "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"
+cp "${PROJECT_ROOT}/Resources/AppIcon.png" "${APP_BUNDLE}/Contents/Resources/AppIcon.png"
+cp "${PROJECT_ROOT}/Resources/"AuraEclipse*Template*.png "${APP_BUNDLE}/Contents/Resources/"
 printf "APPL????" > "${APP_BUNDLE}/Contents/PkgInfo"
 
 codesign --force --deep --sign - "${APP_BUNDLE}"
@@ -42,6 +44,8 @@ chmod +x "${INSTALLER_BUNDLE}/Contents/MacOS/AuraSense"
 sed 's/<string>AuraSense<\/string>/<string>Install AuraSense<\/string>/g; s/com.aurasense.mac.app/com.aurasense.mac.installer/g' \
     "${PROJECT_ROOT}/Resources/Info.plist" > "${INSTALLER_BUNDLE}/Contents/Info.plist"
 cp "${PROJECT_ROOT}/Resources/AppIcon.icns" "${INSTALLER_BUNDLE}/Contents/Resources/AppIcon.icns"
+cp "${PROJECT_ROOT}/Resources/AppIcon.png" "${INSTALLER_BUNDLE}/Contents/Resources/AppIcon.png"
+cp "${PROJECT_ROOT}/Resources/"AuraEclipse*Template*.png "${INSTALLER_BUNDLE}/Contents/Resources/"
 printf "APPL????" > "${INSTALLER_BUNDLE}/Contents/PkgInfo"
 
 codesign --force --deep --sign - "${INSTALLER_BUNDLE}"

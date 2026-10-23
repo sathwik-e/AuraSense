@@ -66,10 +66,27 @@ public final class DockVisibilityManager: ObservableObject {
 
 public final class AuraSenseAppDelegate: NSObject, NSApplicationDelegate {
     public func applicationDidFinishLaunching(_ notification: Notification) {
+        // Terminate any stale older AuraSense instance from previous builds so the new menu bar icon and binary take over cleanly
+        let currentPID = ProcessInfo.processInfo.processIdentifier
+        for bundleID in ["com.aurasense.mac.app", "com.aurasense.mac.installer"] {
+            for app in NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            where app.processIdentifier != currentPID {
+                app.forceTerminate()
+            }
+        }
+
         _ = FaceIdKeychainBridgeService.shared
         MacLockUnlockController.shared.registerGlobalInstantFillShortcuts()
 
-        // Automatically copy AuraSense.app to /Applications if launched from DMG or build directory
+        // Ensure the application icon is explicitly loaded from Resources/AppIcon.icns or AppIcon.png
+        if let icnsPath = Bundle.main.path(forResource: "AppIcon", ofType: "icns"),
+           let appIcon = NSImage(contentsOfFile: icnsPath) {
+            NSApplication.shared.applicationIconImage = appIcon
+        } else if let pngPath = Bundle.main.path(forResource: "AppIcon", ofType: "png"),
+                  let appIcon = NSImage(contentsOfFile: pngPath) {
+            NSApplication.shared.applicationIconImage = appIcon
+        }
+
         if !MacLockUnlockController.shared.isRunningFromApplications {
             DispatchQueue.global(qos: .userInitiated).async {
                 Task { @MainActor in
@@ -91,7 +108,6 @@ public final class AuraSenseAppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
-        // Always bring the window to the front on launch and prompt for Accessibility if needed
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
 
@@ -210,24 +226,38 @@ public struct AuraSenseApp: App {
         .windowResizability(.contentSize)
         .windowStyle(.hiddenTitleBar)
 
-        // Custom Eclipse + Proximity Orbit MenuBarExtra icon
-        MenuBarExtra {
+        // Uses MenuBarExtra(_:systemImage:) with universal macOS Eclipse SF Symbols so the
+        // menu bar icon is 100% guaranteed to appear on every macOS display without Assets.car
+        MenuBarExtra("AuraSense", systemImage: menuBarEclipseSymbolName) {
             MenuBarPopoverView()
-        } label: {
-            Image(
-                nsImage: AuraTheme.menuBarEclipseIcon(
-                    state: engine.proximityState,
-                    isCalibrating: engine.isCalibratingDeskSignal,
-                    isPaused: !engine.monitoringEnabled || engine.pauseUntilDate != nil
-                )
-            )
-            .accessibilityLabel("AuraSense")
         }
         .menuBarExtraStyle(.window)
 
         Settings {
             SecuritySettingsView()
                 .frame(width: 680, height: 560)
+        }
+    }
+
+    /// Universal macOS SF Symbol representing the Eclipse + Proximity state in the Menu Bar.
+    private var menuBarEclipseSymbolName: String {
+        if engine.isCalibratingDeskSignal {
+            return "dot.radiowaves.left.and.right"
+        }
+        if !engine.monitoringEnabled || engine.pauseUntilDate != nil {
+            return "pause.circle.fill"
+        }
+        switch engine.proximityState {
+        case .unlockedInRange:
+            return "moon.circle.fill"
+        case .gracePeriodCountdown:
+            return "moon.circle"
+        case .lockedOutOfRange:
+            return "lock.circle.fill"
+        case .paused:
+            return "pause.circle.fill"
+        case .unconfigured:
+            return "moon.circle.fill"
         }
     }
 }

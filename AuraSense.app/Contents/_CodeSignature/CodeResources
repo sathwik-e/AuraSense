@@ -6,7 +6,43 @@
 	<dict>
 		<key>Resources/AppIcon.icns</key>
 		<data>
-		7potoDUrO2No2esopZsxjgv3kLA=
+		SNv+XHDONYNR3OrO/1yOBI8vifk=
+		</data>
+		<key>Resources/AppIcon.png</key>
+		<data>
+		1JxcMiuExR8xnN6RrqDjRLGy/sA=
+		</data>
+		<key>Resources/AuraEclipseLockedTemplate.png</key>
+		<data>
+		byvYJHL2eFS4lt/q39u128ZQd94=
+		</data>
+		<key>Resources/AuraEclipseLockedTemplate@2x.png</key>
+		<data>
+		78YJtNnIlDOyEsieDpLsfI3fcv0=
+		</data>
+		<key>Resources/AuraEclipsePausedTemplate.png</key>
+		<data>
+		hx9d3L5hwgvTftuSnBtyPMZCzS4=
+		</data>
+		<key>Resources/AuraEclipsePausedTemplate@2x.png</key>
+		<data>
+		McDGuJg93DDIPT1nAszoz29or3A=
+		</data>
+		<key>Resources/AuraEclipseScanTemplate.png</key>
+		<data>
+		b0ld6D0MDikzXtR6UNIZuxwKMtw=
+		</data>
+		<key>Resources/AuraEclipseScanTemplate@2x.png</key>
+		<data>
+		Abe/HYK3D576jF5jkfbSXytMYx8=
+		</data>
+		<key>Resources/AuraEclipseTemplate.png</key>
+		<data>
+		SD2riZowr0/ihb9k2LD5okN2030=
+		</data>
+		<key>Resources/AuraEclipseTemplate@2x.png</key>
+		<data>
+		pu9g/dEVbM+rkMAFWZ+Ivp+w4Ks=
 		</data>
 	</dict>
 	<key>files2</key>
@@ -15,7 +51,70 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			RS+bCpHRkxUCIvQdDFzeVamK1AO+fHZ0jSsP4n5MgPU=
+			CoaFwYfJaYEHuBZMz8b459KnDe+mdkxZkn85ThwMYbQ=
+			</data>
+		</dict>
+		<key>Resources/AppIcon.png</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			Jl4Mu0JjD2bltw3okbtUoz3HmXor8S2oKBT08JeLjhM=
+			</data>
+		</dict>
+		<key>Resources/AuraEclipseLockedTemplate.png</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			XA/G+YEwsVrQi8tiPz29enzP1ONPI0yKdwvuoVGqyrE=
+			</data>
+		</dict>
+		<key>Resources/AuraEclipseLockedTemplate@2x.png</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			tgw1+GW32m/LDbJOsh+LVTDFPTiG57kO736+dmoJrw0=
+			</data>
+		</dict>
+		<key>Resources/AuraEclipsePausedTemplate.png</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			arSTL2A9reyZJ8SAXGHzr9E+FjE0Hx3FA25+eSiXQ1M=
+			</data>
+		</dict>
+		<key>Resources/AuraEclipsePausedTemplate@2x.png</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			jT9zMAVqjp84BvrexC8IZF36Jwe27N+G7WMtr/pCqYc=
+			</data>
+		</dict>
+		<key>Resources/AuraEclipseScanTemplate.png</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			QbZuz5gno7hgPI8U+oz/Lsgp/CX27sXbjmLoVF127iY=
+			</data>
+		</dict>
+		<key>Resources/AuraEclipseScanTemplate@2x.png</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			XL037cS1ppNf2wLffghtc6CqQ0v8cY9HrTgcML5AaTI=
+			</data>
+		</dict>
+		<key>Resources/AuraEclipseTemplate.png</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			9GOPHTnhK+FgLW3R6noI2RR1pYuOR749hIEpuiBLp8o=
+			</data>
+		</dict>
+		<key>Resources/AuraEclipseTemplate@2x.png</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			6ozy+bDPGlPUpUMGiyKopbHdRGxGQkyBtD+HJqdCSog=
 			</data>
 		</dict>
 	</dict>

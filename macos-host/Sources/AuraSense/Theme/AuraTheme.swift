@@ -33,7 +33,7 @@ public struct AuraState<Value>: DynamicProperty {
     }
 }
 
-/// Defines AuraSense v1.0's Neon Orbit & Eclipse design language:
+/// Defines AuraSense v1's Neon Orbit & Eclipse design language:
 /// deep obsidian void, electric blue to ice-cyan orbit gradients, crescent eclipse corona,
 /// and wide-tracked geometric typography (`Λ U R Λ S E N S E`).
 public enum AuraTheme {
@@ -71,104 +71,35 @@ public enum AuraTheme {
         }
     }
 
-    /// Custom Eclipse + Proximity Orbit macOS Menu Bar template icon.
-    /// Combines the outer BLE proximity orbit ring and orbiting signal node with an inner
-    /// solar/lunar eclipse crescent that reflects the live lock/unlock state.
-    public static func menuBarEclipseIcon(
+    /// Returns the bundled menu bar template image name (`AuraEclipseTemplate`, etc.)
+    /// located in `Contents/Resources/`. Because the names end in `Template`, macOS AppKit
+    /// automatically renders them as crisp adaptive Menu Bar template icons.
+    public static func menuBarTemplateImageName(
         state: ProximityState,
         isCalibrating: Bool,
         isPaused: Bool
-    ) -> NSImage {
-        let size = NSSize(width: 18, height: 18)
-        let image = NSImage(size: size, flipped: false) { rect in
-            guard let cg = NSGraphicsContext.current?.cgContext else { return false }
-            cg.setAllowsAntialiasing(true)
-            cg.setShouldAntialias(true)
-
-            let center = CGPoint(x: rect.midX, y: rect.midY)
-            let outerR: CGFloat = 7.4
-
-            // 1. Outer Proximity Orbit Ring
-            let orbitPath = NSBezierPath()
-            if isCalibrating {
-                orbitPath.appendArc(withCenter: center, radius: outerR, startAngle: 0, endAngle: 360)
-                let dash: [CGFloat] = [2.2, 1.8]
-                orbitPath.setLineDash(dash, count: 2, phase: 0)
-            } else if case .gracePeriodCountdown = state {
-                orbitPath.appendArc(withCenter: center, radius: outerR, startAngle: 0, endAngle: 360)
-                let dash: [CGFloat] = [3.5, 2.0]
-                orbitPath.setLineDash(dash, count: 2, phase: 0)
-            } else {
-                // Leave a subtle gap around the orbiting BLE node at 45 degrees
-                orbitPath.appendArc(withCenter: center, radius: outerR, startAngle: 62, endAngle: 28, clockwise: false)
-            }
-            orbitPath.lineWidth = 1.35
-            orbitPath.lineCapStyle = .round
-            NSColor.black.withAlphaComponent(isPaused ? 0.45 : 0.92).setStroke()
-            orbitPath.stroke()
-
-            let isLocked: Bool = {
-                if case .lockedOutOfRange = state { return true }
-                return false
-            }()
-
-            // 2. Orbiting BLE Proximity Node on the top-right of the orbit ring (45 deg)
-            let nodeAngle: CGFloat = .pi * 0.25
-            let nodePt = CGPoint(
-                x: center.x + cos(nodeAngle) * outerR,
-                y: center.y + sin(nodeAngle) * outerR
-            )
-            let nodeR: CGFloat = (isLocked || isPaused) ? 1.2 : 1.65
-            let nodeRect = CGRect(x: nodePt.x - nodeR, y: nodePt.y - nodeR, width: nodeR * 2, height: nodeR * 2)
-            NSColor.black.withAlphaComponent(isPaused ? 0.45 : 1.0).setFill()
-            NSBezierPath(ovalIn: nodeRect).fill()
-
-            // 3. Inner Eclipse Crescent (Sun disc + offset Moon cutout via Even-Odd fill)
-            let sunR: CGFloat = 4.55
-            let moonR: CGFloat = 4.05
-            // Offset the occulting disc toward the bottom-left so the bright eclipse corona
-            // shines toward the top-right (matching the AuraSense Neon Orbit Eclipse logo)
-            let moonCenter = CGPoint(x: center.x - 1.15, y: center.y - 1.05)
-
-            let crescent = NSBezierPath()
-            crescent.windingRule = .evenOdd
-            crescent.appendOval(in: CGRect(x: center.x - sunR, y: center.y - sunR, width: sunR * 2, height: sunR * 2))
-            crescent.appendOval(in: CGRect(x: moonCenter.x - moonR, y: moonCenter.y - moonR, width: moonR * 2, height: moonR * 2))
-            NSColor.black.withAlphaComponent(isPaused ? 0.50 : 1.0).setFill()
-            crescent.fill()
-
-            // 4. State indicator inside the dark eclipse shadow:
-            //    - Locked: subtle lock dot/keyhole at the center
-            //    - Calibrating: inner radar wave arc
-            if isLocked {
-                let lockDotR: CGFloat = 1.15
-                let dotCenter = CGPoint(x: center.x - 0.8, y: center.y - 0.8)
-                NSBezierPath(ovalIn: CGRect(
-                    x: dotCenter.x - lockDotR,
-                    y: dotCenter.y - lockDotR,
-                    width: lockDotR * 2,
-                    height: lockDotR * 2
-                )).fill()
-            } else if isCalibrating {
-                let wave = NSBezierPath()
-                wave.appendArc(withCenter: center, radius: 2.2, startAngle: 20, endAngle: 110)
-                wave.lineWidth = 1.1
-                wave.lineCapStyle = .round
-                NSColor.black.setStroke()
-                wave.stroke()
-            }
-
-            return true
+    ) -> String {
+        if isCalibrating {
+            return "AuraEclipseScanTemplate"
         }
-        image.isTemplate = true
-        return image
+        if isPaused {
+            return "AuraEclipsePausedTemplate"
+        }
+        switch state {
+        case .lockedOutOfRange:
+            return "AuraEclipseLockedTemplate"
+        case .gracePeriodCountdown:
+            return "AuraEclipseScanTemplate"
+        case .paused:
+            return "AuraEclipsePausedTemplate"
+        case .unlockedInRange, .unconfigured:
+            return "AuraEclipseTemplate"
+        }
     }
 }
 
 // MARK: - Brand Typography Wordmark (`Λ U R Λ S E N S E`)
 
-/// Matches the uploaded geometric typography where 'A' is rendered as a crossbar-less 'Λ',
-/// 'Λ U R Λ' is pure white, and 'S E N S E' transitions from electric blue to neon cyan.
 public struct AuraBrandWordmarkView: View {
     public let size: CGFloat
     public let tracking: CGFloat
@@ -203,7 +134,8 @@ public struct AuraBrandWordmarkView: View {
 
 // MARK: - Brand Neon Orbit Eclipse Emblem View
 
-/// Renders the signature Neon Orbit + Crescent Eclipse icon in SwiftUI.
+/// Renders the signature Neon Orbit + Crescent Eclipse icon in SwiftUI using
+/// `.destinationOut` subtraction so ONLY the single upper-right eclipse crescent is drawn.
 public struct AuraEclipseLogoView: View {
     public let size: CGFloat
     public let showWordmarkInside: Bool
@@ -215,7 +147,6 @@ public struct AuraEclipseLogoView: View {
 
     public var body: some View {
         ZStack {
-            // Deep black squircle / circle base
             RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
                 .fill(
                     LinearGradient(
@@ -231,7 +162,6 @@ public struct AuraEclipseLogoView: View {
                 .frame(width: size, height: size)
                 .shadow(color: AuraTheme.cyanGlow.opacity(0.32), radius: size * 0.16)
 
-            // Outer Neon Orbit Circle
             Circle()
                 .strokeBorder(
                     LinearGradient(
@@ -248,30 +178,30 @@ public struct AuraEclipseLogoView: View {
                 .frame(width: size * 0.80, height: size * 0.80)
                 .shadow(color: AuraTheme.cyanGlow.opacity(0.55), radius: size * 0.08)
 
-            // Inner Crescent Eclipse Arc
             Canvas { context, canvasSize in
                 let c = CGPoint(x: canvasSize.width / 2, y: canvasSize.height * (showWordmarkInside ? 0.44 : 0.50))
                 let sunR = canvasSize.width * (showWordmarkInside ? 0.21 : 0.24)
-                let moonR = sunR * 0.94
-                let moonCenter = CGPoint(x: c.x - sunR * 0.14, y: c.y + sunR * 0.18)
+                let moonR = sunR * 0.95
+                let moonCenter = CGPoint(x: c.x - sunR * 0.085, y: c.y + sunR * 0.115)
 
-                var path = Path()
-                path.addEllipse(in: CGRect(x: c.x - sunR, y: c.y - sunR, width: sunR * 2, height: sunR * 2))
-                path.addEllipse(in: CGRect(x: moonCenter.x - moonR, y: moonCenter.y - moonR, width: moonR * 2, height: moonR * 2))
-
-                context.fill(
-                    path,
-                    with: .linearGradient(
-                        Gradient(colors: [
-                            Color(red: 0.14, green: 0.46, blue: 1.0),
-                            Color(red: 0.55, green: 0.94, blue: 1.0),
-                            Color.white
-                        ]),
-                        startPoint: CGPoint(x: c.x - sunR, y: c.y + sunR * 0.3),
-                        endPoint: CGPoint(x: c.x + sunR * 0.7, y: c.y - sunR * 0.8)
-                    ),
-                    style: FillStyle(eoFill: true)
-                )
+                context.drawLayer { layer in
+                    let sunPath = Path(ellipseIn: CGRect(x: c.x - sunR, y: c.y - sunR, width: sunR * 2, height: sunR * 2))
+                    layer.fill(
+                        sunPath,
+                        with: .linearGradient(
+                            Gradient(colors: [
+                                Color(red: 0.14, green: 0.46, blue: 1.0),
+                                Color(red: 0.55, green: 0.94, blue: 1.0),
+                                Color.white
+                            ]),
+                            startPoint: CGPoint(x: c.x - sunR, y: c.y + sunR * 0.3),
+                            endPoint: CGPoint(x: c.x + sunR * 0.7, y: c.y - sunR * 0.8)
+                        )
+                    )
+                    let moonPath = Path(ellipseIn: CGRect(x: moonCenter.x - moonR, y: moonCenter.y - moonR, width: moonR * 2, height: moonR * 2))
+                    layer.blendMode = .destinationOut
+                    layer.fill(moonPath, with: .color(.black))
+                }
             }
             .frame(width: size, height: size)
         }

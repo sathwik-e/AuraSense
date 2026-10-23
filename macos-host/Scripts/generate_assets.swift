@@ -5,32 +5,59 @@ import CoreGraphics
 
 // MARK: - Helper to save NSBitmapImageRep as PNG
 
-func savePNG(_ rep: NSBitmapImageRep, to path: String) throws {
+func pngData(from rep: NSBitmapImageRep) throws -> Data {
     guard let data = rep.representation(using: .png, properties: [:]) else {
         throw NSError(domain: "AuraAssetGen", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to encode PNG"])
     }
+    return data
+}
+
+func savePNG(_ rep: NSBitmapImageRep, to path: String) throws {
+    let data = try pngData(from: rep)
     try data.write(to: URL(fileURLWithPath: path))
 }
 
-// MARK: - Helper: Draw Neon Orbit + Eclipse Crescent + Λ U R Λ S E N S E Typography
+// MARK: - Direct Apple .icns Binary Builder (Supports all @1x and @2x Retina chunks)
+
+func writeAppleICNSFile(chunks: [(String, Data)], to path: String) throws {
+    var body = Data()
+    for (osType, pngBytes) in chunks {
+        let typeBytes = Array(osType.utf8)
+        guard typeBytes.count == 4 else { continue }
+        var chunkLen = UInt32(8 + pngBytes.count).bigEndian
+        body.append(contentsOf: typeBytes)
+        withUnsafeBytes(of: &chunkLen) { body.append(contentsOf: $0) }
+        body.append(pngBytes)
+    }
+
+    var fileData = Data()
+    fileData.append(contentsOf: Array("icns".utf8))
+    var totalLen = UInt32(8 + body.count).bigEndian
+    withUnsafeBytes(of: &totalLen) { fileData.append(contentsOf: $0) }
+    fileData.append(body)
+
+    try fileData.write(to: URL(fileURLWithPath: path))
+}
+
+// MARK: - Draw Neon Orbit + True Subtracted Eclipse Crescent + Λ U R Λ S E N S E Typography
 
 func drawEclipseLogo(in cg: CGContext, center: CGPoint, scaleRadius: CGFloat, includeWordmark: Bool) {
     let colorSpace = CGColorSpaceCreateDeviceRGB()
 
-    // 1. Subtle interior deep navy-cyan radial atmosphere inside the orbit ring
+    // 1. Deep sapphire-navy atmospheric glow inside the orbit ring
     let innerGlowColors = [
-        CGColor(red: 0.04, green: 0.14, blue: 0.32, alpha: 0.55),
-        CGColor(red: 0.02, green: 0.06, blue: 0.16, alpha: 0.35),
+        CGColor(red: 0.05, green: 0.16, blue: 0.36, alpha: 0.65),
+        CGColor(red: 0.02, green: 0.07, blue: 0.18, alpha: 0.40),
         CGColor(red: 0.00, green: 0.00, blue: 0.00, alpha: 0.0)
     ] as CFArray
-    if let innerGrad = CGGradient(colorsSpace: colorSpace, colors: innerGlowColors, locations: [0.0, 0.65, 1.0]) {
+    if let innerGrad = CGGradient(colorsSpace: colorSpace, colors: innerGlowColors, locations: [0.0, 0.62, 1.0]) {
         cg.drawRadialGradient(
             innerGrad,
-            startCenter: CGPoint(x: center.x, y: center.y + scaleRadius * 0.08),
-            startRadius: scaleRadius * 0.02,
+            startCenter: CGPoint(x: center.x, y: center.y + scaleRadius * 0.10),
+            startRadius: 0.0,
             endCenter: center,
             endRadius: scaleRadius * 0.98,
-            options: []
+            options: [.drawsBeforeStartLocation]
         )
     }
 
@@ -43,14 +70,14 @@ func drawEclipseLogo(in cg: CGContext, center: CGPoint, scaleRadius: CGFloat, in
     )
 
     let glowPasses: [(CGFloat, CGFloat)] = [
-        (scaleRadius * 0.085, 0.12),
-        (scaleRadius * 0.048, 0.25),
-        (scaleRadius * 0.026, 0.45)
+        (scaleRadius * 0.095, 0.14),
+        (scaleRadius * 0.052, 0.28),
+        (scaleRadius * 0.028, 0.50)
     ]
     for (lineW, alpha) in glowPasses {
         cg.saveGState()
         cg.setLineWidth(max(lineW, 1.0))
-        cg.setStrokeColor(CGColor(red: 0.20, green: 0.78, blue: 1.00, alpha: alpha))
+        cg.setStrokeColor(CGColor(red: 0.20, green: 0.80, blue: 1.00, alpha: alpha))
         cg.strokeEllipse(in: orbitRect)
         cg.restoreGState()
     }
@@ -58,35 +85,35 @@ func drawEclipseLogo(in cg: CGContext, center: CGPoint, scaleRadius: CGFloat, in
     // Main crisp gradient stroke for the outer Neon Orbit ring
     cg.saveGState()
     cg.addEllipse(in: orbitRect)
-    cg.setLineWidth(max(scaleRadius * 0.018, 1.3))
+    cg.setLineWidth(max(scaleRadius * 0.022, 1.4))
     cg.replacePathWithStrokedPath()
     cg.clip()
     let orbitGradColors = [
         CGColor(red: 0.12, green: 0.36, blue: 0.98, alpha: 1.0),
-        CGColor(red: 0.26, green: 0.80, blue: 1.00, alpha: 1.0),
-        CGColor(red: 0.24, green: 0.96, blue: 0.92, alpha: 1.0)
+        CGColor(red: 0.24, green: 0.78, blue: 1.00, alpha: 1.0),
+        CGColor(red: 0.22, green: 0.96, blue: 0.92, alpha: 1.0)
     ] as CFArray
-    if let orbitGrad = CGGradient(colorsSpace: colorSpace, colors: orbitGradColors, locations: [0.0, 0.55, 1.0]) {
+    if let orbitGrad = CGGradient(colorsSpace: colorSpace, colors: orbitGradColors, locations: [0.0, 0.52, 1.0]) {
         cg.drawLinearGradient(
             orbitGrad,
             start: CGPoint(x: orbitRect.minX, y: orbitRect.midY),
             end: CGPoint(x: orbitRect.maxX, y: orbitRect.midY),
-            options: []
+            options: [.drawsBeforeStartLocation, .drawsAfterEndLocation]
         )
     }
     cg.restoreGState()
 
-    // 3. Inner Solar/Lunar Eclipse Crescent Arc
-    let eclipseCenterY = includeWordmark ? (center.y + scaleRadius * 0.10) : center.y
+    // 3. Inner Solar/Lunar Eclipse Crescent Arc using a Transparency Layer + .clear subtraction
+    let eclipseCenterY = includeWordmark ? (center.y + scaleRadius * 0.11) : center.y
     let sunR = scaleRadius * 0.44
     let moonR = sunR * 0.945
     let sunCenter = CGPoint(x: center.x, y: eclipseCenterY)
-    let moonCenter = CGPoint(x: center.x - sunR * 0.115, y: eclipseCenterY - sunR * 0.155)
+    let moonCenter = CGPoint(x: center.x - sunR * 0.095, y: eclipseCenterY - sunR * 0.125)
 
-    // Corona bloom behind the upper-right rim of the eclipse
-    let coronaCenter = CGPoint(x: sunCenter.x + sunR * 0.22, y: sunCenter.y + sunR * 0.32)
+    // Soft cyan-blue corona bloom behind the upper-right crest of the eclipse
+    let coronaCenter = CGPoint(x: sunCenter.x + sunR * 0.18, y: sunCenter.y + sunR * 0.28)
     let coronaColors = [
-        CGColor(red: 0.32, green: 0.86, blue: 1.00, alpha: 0.50),
+        CGColor(red: 0.30, green: 0.86, blue: 1.00, alpha: 0.48),
         CGColor(red: 0.14, green: 0.48, blue: 0.98, alpha: 0.18),
         CGColor(red: 0.00, green: 0.00, blue: 0.00, alpha: 0.0)
     ] as CFArray
@@ -94,42 +121,48 @@ func drawEclipseLogo(in cg: CGContext, center: CGPoint, scaleRadius: CGFloat, in
         cg.drawRadialGradient(
             coronaGrad,
             startCenter: coronaCenter,
-            startRadius: sunR * 0.05,
+            startRadius: 0.0,
             endCenter: sunCenter,
-            endRadius: sunR * 1.35,
-            options: []
+            endRadius: sunR * 1.32,
+            options: [.drawsBeforeStartLocation]
         )
     }
 
-    // Even-Odd Eclipse Crescent Path
+    // Isolated transparency layer: draw Sun circle with gradient, then punch out Moon circle with .clear
     cg.saveGState()
-    let crescentPath = CGMutablePath()
-    crescentPath.addEllipse(in: CGRect(x: sunCenter.x - sunR, y: sunCenter.y - sunR, width: sunR * 2, height: sunR * 2))
-    crescentPath.addEllipse(in: CGRect(x: moonCenter.x - moonR, y: moonCenter.y - moonR, width: moonR * 2, height: moonR * 2))
-    cg.addPath(crescentPath)
-    cg.clip(using: .evenOdd)
+    cg.beginTransparencyLayer(auxiliaryInfo: nil)
 
+    cg.saveGState()
+    cg.addEllipse(in: CGRect(x: sunCenter.x - sunR, y: sunCenter.y - sunR, width: sunR * 2, height: sunR * 2))
+    cg.clip()
     let crescentColors = [
-        CGColor(red: 0.10, green: 0.38, blue: 0.98, alpha: 0.95),
-        CGColor(red: 0.32, green: 0.84, blue: 1.00, alpha: 1.0),
-        CGColor(red: 0.92, green: 0.99, blue: 1.00, alpha: 1.0),
-        CGColor(red: 0.28, green: 0.86, blue: 1.00, alpha: 0.98)
+        CGColor(red: 0.10, green: 0.38, blue: 0.98, alpha: 1.0),
+        CGColor(red: 0.30, green: 0.82, blue: 1.00, alpha: 1.0),
+        CGColor(red: 0.94, green: 0.99, blue: 1.00, alpha: 1.0),
+        CGColor(red: 0.28, green: 0.86, blue: 1.00, alpha: 1.0)
     ] as CFArray
-    if let crescentGrad = CGGradient(colorsSpace: colorSpace, colors: crescentColors, locations: [0.0, 0.45, 0.74, 1.0]) {
+    if let crescentGrad = CGGradient(colorsSpace: colorSpace, colors: crescentColors, locations: [0.0, 0.45, 0.76, 1.0]) {
         cg.drawLinearGradient(
             crescentGrad,
-            start: CGPoint(x: sunCenter.x - sunR, y: sunCenter.y - sunR * 0.2),
+            start: CGPoint(x: sunCenter.x - sunR, y: sunCenter.y - sunR * 0.15),
             end: CGPoint(x: sunCenter.x + sunR * 0.85, y: sunCenter.y + sunR * 0.85),
-            options: []
+            options: [.drawsBeforeStartLocation, .drawsAfterEndLocation]
         )
     }
     cg.restoreGState()
 
+    cg.setBlendMode(.clear)
+    cg.fillEllipse(in: CGRect(x: moonCenter.x - moonR, y: moonCenter.y - moonR, width: moonR * 2, height: moonR * 2))
+    cg.setBlendMode(.normal)
+
+    cg.endTransparencyLayer()
+    cg.restoreGState()
+
     // 4. Geometric Typography: "Λ U R Λ S E N S E"
     if includeWordmark && scaleRadius >= 24 {
-        let fontSize = max(scaleRadius * 0.125, 6.0)
+        let fontSize = max(scaleRadius * 0.122, 6.0)
         let font = NSFont.systemFont(ofSize: fontSize, weight: .light)
-        let kern = fontSize * 0.46
+        let kern = fontSize * 0.45
 
         let fullStr = NSMutableAttributedString()
         let auraPart = NSAttributedString(
@@ -160,7 +193,7 @@ func drawEclipseLogo(in cg: CGContext, center: CGPoint, scaleRadius: CGFloat, in
     }
 }
 
-// MARK: - 1. Generate AppIcon (macOS Squircle with Neon Orbit, Eclipse & Λ U R Λ S E N S E)
+// MARK: - 1. Generate AppIcon (Draws in 1:1 pixel coordinates, sets pointSize after drawing)
 
 func renderAppIcon(pixelSize: Int, pointSize: Int) -> NSBitmapImageRep {
     let rep = NSBitmapImageRep(
@@ -176,14 +209,14 @@ func renderAppIcon(pixelSize: Int, pointSize: Int) -> NSBitmapImageRep {
         bitsPerPixel: 0
     )!
 
-    rep.size = NSSize(width: pointSize, height: pointSize)
+    rep.size = NSSize(width: pixelSize, height: pixelSize)
     NSGraphicsContext.saveGraphicsState()
     let ctx = NSGraphicsContext(bitmapImageRep: rep)!
     NSGraphicsContext.current = ctx
     let cg = ctx.cgContext
 
     let s = CGFloat(pixelSize)
-    let inset = s * 0.06
+    let inset = s * 0.055
     let rect = CGRect(x: inset, y: inset, width: s - inset * 2, height: s - inset * 2)
     let cornerRadius = rect.width * 0.225
 
@@ -191,36 +224,119 @@ func renderAppIcon(pixelSize: Int, pointSize: Int) -> NSBitmapImageRep {
     let squircle = NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius)
     squircle.addClip()
 
-    // Pitch-black obsidian background matching the uploaded Neon Orbit logo
     let colorSpace = CGColorSpaceCreateDeviceRGB()
     let bgColors = [
-        CGColor(red: 0.01, green: 0.01, blue: 0.02, alpha: 1.0),
-        CGColor(red: 0.02, green: 0.04, blue: 0.09, alpha: 1.0),
-        CGColor(red: 0.00, green: 0.01, blue: 0.02, alpha: 1.0)
+        CGColor(red: 0.00, green: 0.01, blue: 0.02, alpha: 1.0),
+        CGColor(red: 0.01, green: 0.03, blue: 0.08, alpha: 1.0),
+        CGColor(red: 0.00, green: 0.00, blue: 0.01, alpha: 1.0)
     ] as CFArray
     let bgGrad = CGGradient(colorsSpace: colorSpace, colors: bgColors, locations: [0.0, 0.5, 1.0])!
     cg.drawLinearGradient(
         bgGrad,
         start: CGPoint(x: rect.minX, y: rect.maxY),
         end: CGPoint(x: rect.maxX, y: rect.minY),
-        options: []
+        options: [.drawsBeforeStartLocation, .drawsAfterEndLocation]
     )
 
     let center = CGPoint(x: s * 0.5, y: s * 0.5)
-    let orbitRadius = rect.width * 0.415
+    let orbitRadius = rect.width * 0.42
     drawEclipseLogo(in: cg, center: center, scaleRadius: orbitRadius, includeWordmark: pixelSize >= 64)
 
-    // Subtle dark glass squircle border
-    squircle.lineWidth = max(s * 0.010, 1.0)
-    NSColor(calibratedRed: 0.22, green: 0.78, blue: 1.0, alpha: 0.22).setStroke()
+    squircle.lineWidth = max(s * 0.012, 1.0)
+    NSColor(calibratedRed: 0.22, green: 0.78, blue: 1.0, alpha: 0.28).setStroke()
     squircle.stroke()
 
     cg.restoreGState()
     NSGraphicsContext.restoreGraphicsState()
+
+    rep.size = NSSize(width: pointSize, height: pointSize)
     return rep
 }
 
-// MARK: - 2. Generate Custom DMG Installer Window Background (660x440 @1x & @2x)
+// MARK: - 2. Generate Menu Bar Eclipse Template Icons (18x18 @1x and 36x36 @2x)
+
+enum MenuBarIconVariant {
+    case active
+    case locked
+    case calibrating
+    case paused
+}
+
+func renderMenuBarEclipsePNG(pixelSize: Int, pointSize: Int, variant: MenuBarIconVariant) -> NSBitmapImageRep {
+    let rep = NSBitmapImageRep(
+        bitmapDataPlanes: nil,
+        pixelsWide: pixelSize,
+        pixelsHigh: pixelSize,
+        bitsPerSample: 8,
+        samplesPerPixel: 4,
+        hasAlpha: true,
+        isPlanar: false,
+        colorSpaceName: .deviceRGB,
+        bytesPerRow: 0,
+        bitsPerPixel: 0
+    )!
+    rep.size = NSSize(width: pixelSize, height: pixelSize)
+    NSGraphicsContext.saveGraphicsState()
+    let ctx = NSGraphicsContext(bitmapImageRep: rep)!
+    NSGraphicsContext.current = ctx
+    let cg = ctx.cgContext
+
+    let scale = CGFloat(pixelSize) / CGFloat(pointSize)
+    cg.scaleBy(x: scale, y: scale)
+
+    let alpha: CGFloat = (variant == .paused) ? 0.50 : 1.0
+    let center = CGPoint(x: CGFloat(pointSize) * 0.5, y: CGFloat(pointSize) * 0.5)
+    let outerR: CGFloat = 7.3
+
+    // 1. Outer Proximity Orbit Ring
+    let orbitPath = NSBezierPath()
+    if variant == .calibrating {
+        orbitPath.appendArc(withCenter: center, radius: outerR, startAngle: 0, endAngle: 360)
+        let dash: [CGFloat] = [2.2, 1.8]
+        orbitPath.setLineDash(dash, count: 2, phase: 0)
+    } else {
+        orbitPath.appendArc(withCenter: center, radius: outerR, startAngle: 64, endAngle: 26, clockwise: false)
+    }
+    orbitPath.lineWidth = 1.4
+    orbitPath.lineCapStyle = .round
+    NSColor.black.withAlphaComponent(alpha).setStroke()
+    orbitPath.stroke()
+
+    // 2. Orbiting BLE Node at 45 degrees (top-right)
+    let nodeAngle: CGFloat = .pi * 0.25
+    let nodePt = CGPoint(x: center.x + cos(nodeAngle) * outerR, y: center.y + sin(nodeAngle) * outerR)
+    let nodeR: CGFloat = (variant == .locked) ? 1.25 : 1.65
+    NSColor.black.withAlphaComponent(alpha).setFill()
+    NSBezierPath(ovalIn: CGRect(x: nodePt.x - nodeR, y: nodePt.y - nodeR, width: nodeR * 2, height: nodeR * 2)).fill()
+
+    // 3. Inner Eclipse Crescent using Transparency Layer + .clear subtraction
+    cg.saveGState()
+    cg.beginTransparencyLayer(auxiliaryInfo: nil)
+    let sunR: CGFloat = 4.6
+    let moonR: CGFloat = 4.05
+    let moonCenter = CGPoint(x: center.x - 1.10, y: center.y - 1.00)
+
+    cg.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: alpha))
+    cg.fillEllipse(in: CGRect(x: center.x - sunR, y: center.y - sunR, width: sunR * 2, height: sunR * 2))
+    cg.setBlendMode(.clear)
+    cg.fillEllipse(in: CGRect(x: moonCenter.x - moonR, y: moonCenter.y - moonR, width: moonR * 2, height: moonR * 2))
+    cg.setBlendMode(.normal)
+    cg.endTransparencyLayer()
+    cg.restoreGState()
+
+    if variant == .locked {
+        let dotR: CGFloat = 1.15
+        let dotCenter = CGPoint(x: center.x - 0.7, y: center.y - 0.7)
+        NSColor.black.withAlphaComponent(alpha).setFill()
+        NSBezierPath(ovalIn: CGRect(x: dotCenter.x - dotR, y: dotCenter.y - dotR, width: dotR * 2, height: dotR * 2)).fill()
+    }
+
+    NSGraphicsContext.restoreGraphicsState()
+    rep.size = NSSize(width: pointSize, height: pointSize)
+    return rep
+}
+
+// MARK: - 3. Generate Custom DMG Installer Window Background (660x440 @1x & @2x)
 
 func renderDMGBackground(scale: CGFloat) -> NSBitmapImageRep {
     let logicalW: CGFloat = 660
@@ -240,7 +356,7 @@ func renderDMGBackground(scale: CGFloat) -> NSBitmapImageRep {
         bytesPerRow: 0,
         bitsPerPixel: 0
     )!
-    rep.size = NSSize(width: logicalW, height: logicalH)
+    rep.size = NSSize(width: pw, height: ph)
     NSGraphicsContext.saveGraphicsState()
     let ctx = NSGraphicsContext(bitmapImageRep: rep)!
     NSGraphicsContext.current = ctx
@@ -249,7 +365,6 @@ func renderDMGBackground(scale: CGFloat) -> NSBitmapImageRep {
 
     let colorSpace = CGColorSpaceCreateDeviceRGB()
 
-    // 1. Deep Pitch-Black to Midnight Eclipse Background
     let bgColors = [
         CGColor(red: 0.01, green: 0.02, blue: 0.05, alpha: 1.0),
         CGColor(red: 0.03, green: 0.06, blue: 0.14, alpha: 1.0),
@@ -260,14 +375,13 @@ func renderDMGBackground(scale: CGFloat) -> NSBitmapImageRep {
         bgGrad,
         start: CGPoint(x: 0, y: logicalH),
         end: CGPoint(x: logicalW, y: 0),
-        options: []
+        options: [.drawsBeforeStartLocation, .drawsAfterEndLocation]
     )
 
     let leftCenter = CGPoint(x: 175, y: logicalH - 220)
     let rightCenter = CGPoint(x: 485, y: logicalH - 220)
     let centerPoint = CGPoint(x: 330, y: logicalH - 220)
 
-    // 2. Subtle Eclipse Orbit Rings in Center
     for idx in 0..<4 {
         let r = CGFloat(95 + idx * 58)
         let ringRect = CGRect(x: centerPoint.x - r, y: centerPoint.y - r, width: r * 2, height: r * 2)
@@ -277,7 +391,6 @@ func renderDMGBackground(scale: CGFloat) -> NSBitmapImageRep {
         ringPath.stroke()
     }
 
-    // 3. Pedestal Cards
     func drawPedestal(center: CGPoint, borderTint: NSColor, badgeText: String) {
         let w: CGFloat = 156
         let h: CGFloat = 166
@@ -302,7 +415,7 @@ func renderDMGBackground(scale: CGFloat) -> NSBitmapImageRep {
     drawPedestal(
         center: leftCenter,
         borderTint: NSColor(calibratedRed: 0.22, green: 0.84, blue: 1.0, alpha: 0.55),
-        badgeText: "AURASENSE 1.0"
+        badgeText: "AURASENSE V1"
     )
     drawPedestal(
         center: rightCenter,
@@ -310,7 +423,6 @@ func renderDMGBackground(scale: CGFloat) -> NSBitmapImageRep {
         badgeText: "APPLICATIONS"
     )
 
-    // 4. Neon Chevron Track
     let chevronY = centerPoint.y
     for i in -2...2 {
         let cx = centerPoint.x + CGFloat(i * 20)
@@ -326,7 +438,6 @@ func renderDMGBackground(scale: CGFloat) -> NSBitmapImageRep {
         chev.stroke()
     }
 
-    // 5. Top Brand Wordmark ("Λ U R Λ S E N S E")
     let brandFont = NSFont.systemFont(ofSize: 26, weight: .light)
     let brandStr = NSMutableAttributedString()
     brandStr.append(NSAttributedString(
@@ -349,7 +460,7 @@ func renderDMGBackground(scale: CGFloat) -> NSBitmapImageRep {
     brandStr.draw(at: CGPoint(x: centerPoint.x - titleSize.width / 2, y: logicalH - 60))
 
     let subStr = NSAttributedString(
-        string: "BLE Proximity Lock & Instant Keychain Auto-Fill for macOS (v1.0)",
+        string: "BLE Proximity Lock & Instant Keychain Auto-Fill for macOS (v1)",
         attributes: [
             .font: NSFont.systemFont(ofSize: 12.5, weight: .regular),
             .foregroundColor: NSColor(calibratedRed: 0.68, green: 0.84, blue: 0.98, alpha: 0.88)
@@ -358,7 +469,6 @@ func renderDMGBackground(scale: CGFloat) -> NSBitmapImageRep {
     let subSize = subStr.size()
     subStr.draw(at: CGPoint(x: centerPoint.x - subSize.width / 2, y: logicalH - 84))
 
-    // 6. Simple Bottom Instruction Bar
     let footerRect = CGRect(x: 110, y: 24, width: logicalW - 220, height: 40)
     let footerPath = NSBezierPath(roundedRect: footerRect, xRadius: 12, yRadius: 12)
     NSColor(calibratedRed: 0.05, green: 0.09, blue: 0.18, alpha: 0.82).setFill()
@@ -378,6 +488,7 @@ func renderDMGBackground(scale: CGFloat) -> NSBitmapImageRep {
     footerText.draw(at: CGPoint(x: centerPoint.x - fSize.width / 2, y: footerRect.midY - fSize.height / 2))
 
     NSGraphicsContext.restoreGraphicsState()
+    rep.size = NSSize(width: logicalW, height: logicalH)
     return rep
 }
 
@@ -386,43 +497,46 @@ func renderDMGBackground(scale: CGFloat) -> NSBitmapImageRep {
 let fm = FileManager.default
 let currentDir = fm.currentDirectoryPath
 let resourcesDir = "\(currentDir)/Resources"
-let iconsetDir = "/tmp/AppIcon.iconset"
-
-try? fm.removeItem(atPath: iconsetDir)
-try fm.createDirectory(atPath: iconsetDir, withIntermediateDirectories: true)
 try fm.createDirectory(atPath: resourcesDir, withIntermediateDirectories: true)
 
-let iconSpecs: [(String, Int, Int)] = [
-    ("icon_16x16.png", 16, 16),
-    ("icon_16x16@2x.png", 32, 16),
-    ("icon_32x32.png", 32, 32),
-    ("icon_32x32@2x.png", 64, 32),
-    ("icon_128x128.png", 128, 128),
-    ("icon_128x128@2x.png", 256, 128),
-    ("icon_256x256.png", 256, 256),
-    ("icon_256x256@2x.png", 512, 256),
-    ("icon_512x512.png", 512, 512),
-    ("icon_512x512@2x.png", 1024, 512)
+let icnsSpec: [(String, Int, Int)] = [
+    ("icp4", 16, 16),
+    ("ic11", 32, 16),
+    ("icp5", 32, 32),
+    ("ic12", 64, 32),
+    ("ic07", 128, 128),
+    ("ic13", 256, 128),
+    ("ic08", 256, 256),
+    ("ic14", 512, 256),
+    ("ic09", 512, 512),
+    ("ic10", 1024, 512)
 ]
 
-for (filename, px, pt) in iconSpecs {
+var icnsChunks: [(String, Data)] = []
+for (osType, px, pt) in icnsSpec {
     let rep = renderAppIcon(pixelSize: px, pointSize: pt)
-    try savePNG(rep, to: "\(iconsetDir)/\(filename)")
+    let data = try pngData(from: rep)
+    icnsChunks.append((osType, data))
 }
 
-let icnsURL = URL(fileURLWithPath: "\(resourcesDir)/AppIcon.icns")
-let icnsSizes = [16, 32, 64, 128, 256, 512, 1024]
-if let dest = CGImageDestinationCreateWithURL(icnsURL as CFURL, "com.apple.icns" as CFString, icnsSizes.count, nil) {
-    for sz in icnsSizes {
-        let rep = renderAppIcon(pixelSize: sz, pointSize: sz)
-        if let cgImg = rep.cgImage {
-            CGImageDestinationAddImage(dest, cgImg, nil)
-        }
-    }
-    CGImageDestinationFinalize(dest)
-}
+let icnsPath = "\(resourcesDir)/AppIcon.icns"
+try writeAppleICNSFile(chunks: icnsChunks, to: icnsPath)
+
 let masterIcon = renderAppIcon(pixelSize: 1024, pointSize: 1024)
 try savePNG(masterIcon, to: "\(resourcesDir)/AppIcon.png")
+
+let variants: [(String, MenuBarIconVariant)] = [
+    ("AuraEclipseTemplate", .active),
+    ("AuraEclipseLockedTemplate", .locked),
+    ("AuraEclipseScanTemplate", .calibrating),
+    ("AuraEclipsePausedTemplate", .paused)
+]
+for (baseName, variant) in variants {
+    let rep1x = renderMenuBarEclipsePNG(pixelSize: 18, pointSize: 18, variant: variant)
+    try savePNG(rep1x, to: "\(resourcesDir)/\(baseName).png")
+    let rep2x = renderMenuBarEclipsePNG(pixelSize: 36, pointSize: 18, variant: variant)
+    try savePNG(rep2x, to: "\(resourcesDir)/\(baseName)@2x.png")
+}
 
 let dmg1x = renderDMGBackground(scale: 1.0)
 try savePNG(dmg1x, to: "\(resourcesDir)/dmg_background.png")
@@ -430,4 +544,4 @@ try savePNG(dmg1x, to: "\(resourcesDir)/dmg_background.png")
 let dmg2x = renderDMGBackground(scale: 2.0)
 try savePNG(dmg2x, to: "\(resourcesDir)/dmg_background@2x.png")
 
-print("Generated Neon Orbit Eclipse AppIcon.icns, dmg_background.png, and dmg_background@2x.png successfully.")
+print("Generated multi-resolution Retina AppIcon.icns, AppIcon.png, AuraEclipse*Template.png, and DMG backgrounds successfully.")
