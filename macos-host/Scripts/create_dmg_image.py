@@ -1,4 +1,4 @@
-import os, sys, struct, stat, time, plistlib, zlib
+import os, sys, struct, stat, time, plistlib
 
 BLOCK_SIZE = 4096
 NODE_SIZE = 32768
@@ -16,10 +16,59 @@ def cat_key(parent_cnid, name):
     u = u16_str(name)
     return struct.pack('>HI', 4 + len(u), parent_cnid) + u
 
+# Exact Apple HFS+ FastUnicodeCompare (gLatin1Table in XNU hfs_unistr.c) relative ordering
+# for ASCII characters:
+#   punctuation (' ', '-', '.', '/', '_', '@') < digits ('0'..'9') < letters ('a'..'z' case-insensitive)
+def _char_hfs_weight(ch):
+    code = ord(ch)
+    if 0x41 <= code <= 0x5A:
+        code += 0x20  # fold 'A'..'Z' to 'a'..'z'
+    # Exact relative rank in XNU gLatin1Table for printable ASCII used in filenames:
+    table = {
+        ord(' '): 0x01,
+        ord('!'): 0x02,
+        ord('"'): 0x03,
+        ord('#'): 0x04,
+        ord('$'): 0x05,
+        ord('%'): 0x06,
+        ord('&'): 0x07,
+        ord("'"): 0x08,
+        ord('('): 0x09,
+        ord(')'): 0x0A,
+        ord('*'): 0x0B,
+        ord('+'): 0x0C,
+        ord(','): 0x0D,
+        ord('-'): 0x0E,
+        ord('.'): 0x0F,
+        ord('/'): 0x10,
+        ord(':'): 0x11,
+        ord(';'): 0x12,
+        ord('<'): 0x13,
+        ord('='): 0x14,
+        ord('>'): 0x15,
+        ord('?'): 0x16,
+        ord('@'): 0x17,
+        ord('['): 0x18,
+        ord('\\'): 0x19,
+        ord(']'): 0x1A,
+        ord('^'): 0x1B,
+        ord('_'): 0x1C,
+        ord('`'): 0x1D,
+        ord('{'): 0x1E,
+        ord('|'): 0x1F,
+        ord('}'): 0x20,
+        ord('~'): 0x21,
+    }
+    if code in table:
+        return table[code]
+    if 0x30 <= code <= 0x39:
+        return 0x30 + (code - 0x30)  # '0'..'9' -> 0x30..0x39 (48..57)
+    if 0x61 <= code <= 0x7A:
+        return 0x50 + (code - 0x61)  # 'a'..'z' -> 0x50..0x69 (80..105)
+    return 0x80 + code
+
 def hfs_fast_unicode_sort_key(name):
-    # Apple HFS+ FastUnicodeCompare folds ASCII lowercase 'a'..'z' (0x61..0x7A)
-    # to uppercase 'A'..'Z' (0x41..0x5A), so letters (65..90) sort BEFORE '_' (95).
-    return [ord(c.upper()) for c in name]
+    return [_char_hfs_weight(c) for c in name]
 
 def make_finder_background_alias(create_hfs_ts, bg_dir_cnid=16, bg_file_cnid=17):
     vol_name = "AuraSense"
@@ -112,14 +161,15 @@ def write_custom_ds_store(target_path, bg_dir_cnid=16, bg_file_cnid=17):
         ('AuraSense.app', 'Iloc', 'blob', iloc_payload(175, 220)),
         ('Install AuraSense.app', 'Iloc', 'blob', iloc_payload(330, 345)),
     ]
-    entries.sort(key=lambda item: (item[0].upper(), item[1]))
+    entries.sort(key=lambda item: (item[0].lower(), item[1]))
     raw_records = b''.join(make_entry(*e) for e in entries)
 
     leaf_block = bytearray(4096)
     struct.pack_into('>II', leaf_block, 0, 0, len(entries))
     leaf_block[8:8+len(raw_records)] = raw_records
 
-    root_header = struct.pack('>IIIII', 2, 0, len(entries), 4096, 1) + b'\x00' * 12
+    # Fixed DSDB B-tree superblock: (root_node=2, levels=0, num_records=len(entries), num_nodes=1, page_size=4096)
+    root_header = struct.pack('>IIIII', 2, 0, len(entries), 1, 4096) + b'\x00' * 12
 
     toc_block = bytearray(2048)
     struct.pack_into('>II', toc_block, 0, 3, 0)
@@ -185,7 +235,6 @@ class HFSPlusBuilder:
             'mtime': hfs_time(st.st_mtime),
             'mode': 0o040755,
             'custom_icon': is_root,
-            'is_bundle': name.endswith('.app'),
         }
         self.items.append(folder_item)
 
@@ -323,7 +372,6 @@ class HFSPlusBuilder:
                 cnid = item['cnid']
                 name = item['name']
                 mtime = item['mtime']
-                # HFS+ FastUnicodeCompare case-folding sort order (uppercase folds letters to 65..90 < '_' 95)
                 name_sort = hfs_fast_unicode_sort_key(name)
                 kbytes = cat_key(p_cnid, name)
 
@@ -331,8 +379,6 @@ class HFSPlusBuilder:
                     finfo = bytearray(16)
                     if item.get('custom_icon'):
                         struct.pack_into('>H', finfo, 8, 0x0400)
-                    elif item.get('is_bundle'):
-                        struct.pack_into('>H', finfo, 8, 0x2000)
                     bsd = struct.pack('>IIBBHI', 99, 99, 0, 0, item['mode'], 0)
                     val = struct.pack(
                         '>hHIIIIIII16s16s16sII',
@@ -385,7 +431,7 @@ class HFSPlusBuilder:
             ext_blocks = len(ext_btree) // BLOCK_SIZE
             self.ext_start_block = 2
             self.cat_start_block = 2 + ext_blocks
-            self.data_region_start_block = self.cat_start_block + cat_blocks
+            self.data_region_start_block = 2 + ext_blocks + cat_blocks
 
         total_used_blocks = self.data_region_start_block + self.current_data_block
         total_blocks = max(total_used_blocks + 64, 2100)

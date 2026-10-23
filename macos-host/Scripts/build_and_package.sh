@@ -41,14 +41,30 @@ mkdir -p "${INSTALLER_BUNDLE}/Contents/Resources"
 
 cp "${BUILD_DIR}/AuraSense" "${INSTALLER_BUNDLE}/Contents/MacOS/AuraSense"
 chmod +x "${INSTALLER_BUNDLE}/Contents/MacOS/AuraSense"
-sed 's/<string>AuraSense<\/string>/<string>Install AuraSense<\/string>/g; s/com.aurasense.mac.app/com.aurasense.mac.installer/g' \
-    "${PROJECT_ROOT}/Resources/Info.plist" > "${INSTALLER_BUNDLE}/Contents/Info.plist"
+
+# Keep CFBundleExecutable as "AuraSense" while updating CFBundleName, CFBundleDisplayName, and CFBundleIdentifier
+python3 - "${PROJECT_ROOT}/Resources/Info.plist" "${INSTALLER_BUNDLE}/Contents/Info.plist" <<'PY'
+import sys, plistlib
+with open(sys.argv[1], 'rb') as f:
+    pl = plistlib.load(f)
+pl['CFBundleExecutable'] = 'AuraSense'
+pl['CFBundleName'] = 'Install AuraSense'
+pl['CFBundleDisplayName'] = 'Install AuraSense'
+pl['CFBundleIdentifier'] = 'com.aurasense.mac.installer'
+with open(sys.argv[2], 'wb') as f:
+    plistlib.dump(pl, f)
+PY
+
 cp "${PROJECT_ROOT}/Resources/AppIcon.icns" "${INSTALLER_BUNDLE}/Contents/Resources/AppIcon.icns"
 cp "${PROJECT_ROOT}/Resources/AppIcon.png" "${INSTALLER_BUNDLE}/Contents/Resources/AppIcon.png"
 cp "${PROJECT_ROOT}/Resources/"AuraEclipse*Template*.png "${INSTALLER_BUNDLE}/Contents/Resources/"
 printf "APPL????" > "${INSTALLER_BUNDLE}/Contents/PkgInfo"
 
 codesign --force --deep --sign - "${INSTALLER_BUNDLE}"
+
+# Verify both bundles pass strict codesign verification
+codesign -vvv --deep --strict "${APP_BUNDLE}"
+codesign -vvv --deep --strict "${INSTALLER_BUNDLE}"
 
 rm -rf "${RUST_OUT_DIR}/AuraSense.app"
 cp -R "${APP_BUNDLE}" "${RUST_OUT_DIR}/AuraSense.app"
