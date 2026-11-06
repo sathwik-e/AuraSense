@@ -1,5 +1,23 @@
 import SwiftUI
 import AppKit
+import Combine
+import ServiceManagement
+
+/// How this process was launched. The DMG's "Install AuraSense.app" bundle
+/// (`com.aurasense.mac.installer`) only copies AuraSense.app into /Applications and hands off to it;
+/// it must never bind devices, request permissions, store the Keychain password or run protection.
+public enum AuraLaunchMode {
+    public static let installerBundleIdentifier = "com.aurasense.mac.installer"
+
+    public static let isInstallerBundle: Bool = {
+        Bundle.main.bundleIdentifier == installerBundleIdentifier ||
+        CommandLine.arguments.contains("--installer") ||
+        Bundle.main.bundlePath.lowercased().contains("install aurasense")
+    }()
+
+    /// `/Applications/AuraSense.app --setup` (launched by the installer) opens the Guided Setup.
+    public static let requestedGuidedSetup: Bool = CommandLine.arguments.contains("--setup")
+}
 
 /// Manages macOS Dock icon visibility (`NSApplication.ActivationPolicy`).
 /// When the main Dashboard or Guided Setup window is open, AuraSense uses `.regular` policy;
@@ -20,7 +38,11 @@ public final class DockVisibilityManager: ObservableObject {
     public func showAppInForeground() {
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
-        for window in NSApplication.shared.windows where isStandardAppWindow(window) {
+        for window in NSApplication.shared.windows
+        where isStandardAppWindow(window) && (window.isVisible || window.isMiniaturized) {
+            if window.isMiniaturized {
+                window.deminiaturize(nil)
+            }
             window.makeKeyAndOrderFront(nil)
         }
     }
@@ -64,15 +86,102 @@ public final class DockVisibilityManager: ObservableObject {
     }
 }
 
+/// Lets AppKit code (hand-off notifications, the agent launch path) open SwiftUI windows.
+@MainActor
+public final class WindowRouter {
+    public static let shared = WindowRouter()
+    public var openWindowAction: OpenWindowAction?
+    /// True when launchd relaunched AuraSense quietly; the auto-opened dashboard is closed on appear.
+    public var suppressInitialWindow = false
+    /// Set when launched with `--setup`; consumed once by the dashboard to open Guided Setup.
+    private var pendingGuidedSetupRequest = AuraLaunchMode.requestedGuidedSetup
+
+    private init() {}
+
+    /// Persisted when a `--setup` launch hands off to another AuraSense instance (launchd agent or
+    /// an already-running copy) so that instance opens Guided Setup instead of losing the request.
+    public static let pendingGuidedSetupDefaultsKey = "aurasense.pendingGuidedSetup"
+
+    /// Returns true (once) if this launch, or a launch that handed off to us, asked for Guided Setup.
+    public func consumeGuidedSetupRequest() -> Bool {
+        let persisted = UserDefaults.standard.bool(forKey: Self.pendingGuidedSetupDefaultsKey)
+        defer {
+            pendingGuidedSetupRequest = false
+            UserDefaults.standard.removeObject(forKey: Self.pendingGuidedSetupDefaultsKey)
+        }
+        return pendingGuidedSetupRequest || persisted
+    }
+
+    /// Called from views that have an `openWindow` environment value.
+    public func register(_ action: OpenWindowAction) {
+        openWindowAction = action
+    }
+
+    /// Returns true (once) if the window that just appeared should close immediately.
+    public func consumeInitialWindowSuppression() -> Bool {
+        defer { suppressInitialWindow = false }
+        return suppressInitialWindow
+    }
+
+    public func showDashboard() {
+        DockVisibilityManager.shared.showAppInForeground()
+        let hasDashboard = NSApplication.shared.windows.contains { win in
+            (win.isVisible || win.isMiniaturized) && win.level == .normal && win.styleMask.contains(.titled) && win.title == "AuraSense"
+        }
+        if !hasDashboard {
+            openWindowAction?(id: "main-dashboard")
+        }
+    }
+}
+
 public final class AuraSenseAppDelegate: NSObject, NSApplicationDelegate {
-    public func applicationDidFinishLaunching(_ notification: Notification) {
-        // Terminate any stale older AuraSense instance from previous builds so the new menu bar icon and binary take over cleanly
-        let currentPID = ProcessInfo.processInfo.processIdentifier
-        for bundleID in ["com.aurasense.mac.app", "com.aurasense.mac.installer"] {
-            for app in NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
-            where app.processIdentifier != currentPID {
-                app.forceTerminate()
+    public func applicationWillFinishLaunching(_ notification: Notification) {
+        // The installer bundle only copies the app; it never coordinates protection instances.
+        if AuraLaunchMode.isInstallerBundle { return }
+        MainActor.assumeIsolated {
+            if AuraLaunchMode.requestedGuidedSetup {
+                // Survives a hand-off below; consumed by whichever instance shows the UI.
+                UserDefaults.standard.set(true, forKey: WindowRouter.pendingGuidedSetupDefaultsKey)
             }
+            // Resolve duplicate/stale instances before any UI appears.
+            if BackgroundPersistenceManager.shared.coordinateLaunch() == .exitHandedOff {
+                exit(0)
+            }
+        }
+    }
+
+    public func applicationDidFinishLaunching(_ notification: Notification) {
+        if AuraLaunchMode.isInstallerBundle {
+            // Installer: no relay server, shortcuts, LaunchAgent or permission prompts here —
+            // all of that belongs to /Applications/AuraSense.app (com.aurasense.mac.app).
+            NSApplication.shared.setActivationPolicy(.regular)
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            return
+        }
+
+        MainActor.assumeIsolated {
+            let persistence = BackgroundPersistenceManager.shared
+            persistence.startListening { openGuidedSetup in
+                let router = WindowRouter.shared
+                // Always consume the persisted flag so a handled request can't reopen Setup later.
+                let persistedSetupRequest = router.consumeGuidedSetupRequest()
+                if (openGuidedSetup || persistedSetupRequest), let open = router.openWindowAction {
+                    // A `--setup` launch handed off to this running instance.
+                    DockVisibilityManager.shared.showAppInForeground()
+                    open(id: "installer-wizard")
+                } else {
+                    router.showDashboard()
+                }
+            }
+            if persistence.keepRunningInBackground {
+                persistence.installOrRefreshAgent(loadNow: false)
+                // The LaunchAgent already starts AuraSense at login; avoid a second login item.
+                if persistence.isAgentInstalled, SMAppService.mainApp.status == .enabled {
+                    try? SMAppService.mainApp.unregister()
+                }
+            }
+            _ = UnlockCelebrationCoordinator.shared
+            _ = UnlockSoundLibrary.shared
         }
 
         _ = FaceIdKeychainBridgeService.shared
@@ -87,13 +196,8 @@ public final class AuraSenseAppDelegate: NSObject, NSApplicationDelegate {
             NSApplication.shared.applicationIconImage = appIcon
         }
 
-        if !MacLockUnlockController.shared.isRunningFromApplications {
-            DispatchQueue.global(qos: .userInitiated).async {
-                Task { @MainActor in
-                    _ = MacLockUnlockController.shared.installToApplicationsFolder()
-                }
-            }
-        }
+        // Installing into /Applications only happens from the installer bundle or an explicit
+        // button in Guided Setup — never automatically at launch.
 
         NotificationCenter.default.addObserver(
             self,
@@ -108,14 +212,32 @@ public final class AuraSenseAppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
-        NSApplication.shared.setActivationPolicy(.regular)
-        NSApplication.shared.activate(ignoringOtherApps: true)
+        let persistence = MainActor.assumeIsolated { BackgroundPersistenceManager.shared }
+        let startQuietly = MainActor.assumeIsolated {
+            persistence.launchedByAgent && !persistence.consumePendingShowDashboard()
+        }
+        if startQuietly {
+            // Relaunched by launchd (login, force quit, crash): stay in the menu bar only.
+            MainActor.assumeIsolated {
+                WindowRouter.shared.suppressInitialWindow = true
+                NSApplication.shared.setActivationPolicy(.accessory)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                Task { @MainActor in
+                    // If the dashboard never appeared there is nothing to suppress later.
+                    WindowRouter.shared.suppressInitialWindow = false
+                }
+            }
+        } else {
+            NSApplication.shared.setActivationPolicy(.regular)
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
             Task { @MainActor in
                 if !MacLockUnlockController.shared.refreshAccessibilityStatus(prompt: false) {
                     MacLockUnlockController.shared.promptForAccessibilityPermission(
-                        resetStaleEntryIfNeeded: true,
+                        resetStaleEntryIfNeeded: false,
                         openSettingsPane: false
                     )
                 }
@@ -123,11 +245,27 @@ public final class AuraSenseAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    public func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        Task { @MainActor in
-            DockVisibilityManager.shared.showAppInForeground()
+    public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if AuraLaunchMode.isInstallerBundle { return .terminateNow }
+        return MainActor.assumeIsolated {
+            BackgroundPersistenceManager.shared.shouldTerminate()
         }
-        return true
+    }
+
+    public func applicationWillTerminate(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            // Never leave AuraSense's transient password copy on the pasteboard after exit.
+            CredentialInjectionGuard.shared.wipeTransientClipboardNow()
+        }
+    }
+
+    public func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if AuraLaunchMode.isInstallerBundle { return true }
+        Task { @MainActor in
+            // Reuse the existing dashboard instead of resurrecting closed Settings/Setup windows.
+            WindowRouter.shared.showDashboard()
+        }
+        return false
     }
 
     @objc private func windowDidBecomeKey(_ notification: Notification) {
@@ -153,16 +291,77 @@ public final class AuraSenseAppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-@main
-public struct AuraSenseApp: App {
-    @NSApplicationDelegateAdaptor(AuraSenseAppDelegate.self) private var appDelegate
+/// Re-publishes engine changes to the App scene (menu bar icon) without creating the BLE engine
+/// in the installer bundle, where Bluetooth/Accessibility must never be requested.
+@MainActor
+public final class AuraSceneObserver: ObservableObject {
+    public static let shared = AuraSceneObserver()
+    private var cancellables: Set<AnyCancellable> = []
+
+    private init() {
+        guard !AuraLaunchMode.isInstallerBundle else { return }
+        BLEProximityEngine.shared.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+    }
+}
+
+/// "Aura Protection" menu items. The ⌃⌥⌘Space hotkey are handled only by the
+/// global/local event monitor (registerGlobalInstantFillShortcuts), so these items carry no
+/// `.keyboardShortcut` — otherwise one key press would fire two fills.
+struct AuraProtectionCommandItems: View {
     @ObservedObject private var engine = BLEProximityEngine.shared
     @ObservedObject private var lockController = MacLockUnlockController.shared
     @ObservedObject private var dockManager = DockVisibilityManager.shared
 
+    var body: some View {
+        Toggle("Enable Proximity Monitoring", isOn: $engine.monitoringEnabled)
+            .keyboardShortcut("m", modifiers: [.command, .shift])
+
+        Button("Start 10s Desk Signal Calibration") {
+            engine.startTenSecondDeskCalibration()
+        }
+        .keyboardShortcut("k", modifiers: [.command, .shift])
+
+        Button("Prompt Accessibility Permission Again") {
+            lockController.promptForAccessibilityPermission(resetStaleEntryIfNeeded: false, openSettingsPane: true)
+        }
+
+        Divider()
+
+        Button("Instant-Fill Active Password Prompt (⌃⌥⌘Space)") {
+            Task { @MainActor in
+                await lockController.instantFillAfterReturningFocus()
+            }
+        }
+
+        Divider()
+
+        Button("Lock Mac Immediately") {
+            engine.triggerManualLock()
+        }
+        .keyboardShortcut("l", modifiers: [.command, .shift])
+
+        Button("Hide Window & Live in Menu Bar Only") {
+            dockManager.hideFromDockImmediately()
+        }
+        .keyboardShortcut("w", modifiers: [.command])
+
+        Divider()
+
+        Button("Stop AuraSense Completely…") {
+            BackgroundPersistenceManager.shared.requestStopCompletely()
+        }
+    }
+}
+
+@main
+public struct AuraSenseApp: App {
+    @NSApplicationDelegateAdaptor(AuraSenseAppDelegate.self) private var appDelegate
+    @ObservedObject private var sceneObserver = AuraSceneObserver.shared
+
     private var launchedAsInstaller: Bool {
-        CommandLine.arguments.contains("--installer") ||
-        Bundle.main.bundlePath.lowercased().contains("install aurasense")
+        AuraLaunchMode.isInstallerBundle
     }
 
     public init() {}
@@ -170,7 +369,7 @@ public struct AuraSenseApp: App {
     public var body: some Scene {
         WindowGroup("AuraSense", id: "main-dashboard") {
             if launchedAsInstaller {
-                InstallerWindowView()
+                InstallerBundleView()
             } else {
                 MainDashboardView()
             }
@@ -180,67 +379,50 @@ public struct AuraSenseApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandMenu("Aura Protection") {
-                Toggle("Enable Proximity Monitoring", isOn: $engine.monitoringEnabled)
-                    .keyboardShortcut("m", modifiers: [.command, .shift])
-
-                Button("Start 10s Desk Signal Calibration") {
-                    engine.startTenSecondDeskCalibration()
+                if !launchedAsInstaller {
+                    AuraProtectionCommandItems()
                 }
-                .keyboardShortcut("k", modifiers: [.command, .shift])
-
-                Button("Prompt Accessibility Permission Again") {
-                    lockController.promptForAccessibilityPermission(resetStaleEntryIfNeeded: true, openSettingsPane: true)
-                }
-
-                Divider()
-
-                Button("Instant-Fill Active Password Prompt (⌃⌥⌘Space)") {
-                    Task { @MainActor in
-                        _ = await lockController.instantFillActivePasswordField()
-                    }
-                }
-                .keyboardShortcut(" ", modifiers: [.control, .option, .command])
-
-                Button("Copy Password for 4s Paste (⌃⌥⌘V)") {
-                    lockController.copyPasswordTemporarilyForPaste()
-                }
-                .keyboardShortcut("v", modifiers: [.control, .option, .command])
-
-                Divider()
-
-                Button("Lock Mac Immediately") {
-                    engine.triggerManualLock()
-                }
-                .keyboardShortcut("l", modifiers: [.command, .shift])
-
-                Button("Hide Window & Live in Menu Bar Only") {
-                    dockManager.hideFromDockImmediately()
-                }
-                .keyboardShortcut("w", modifiers: [.command])
             }
         }
 
         Window("AuraSense Guided Setup", id: "installer-wizard") {
-            InstallerWindowView()
+            if launchedAsInstaller {
+                InstallerBundleView()
+            } else {
+                InstallerWindowView()
+            }
         }
         .windowResizability(.contentSize)
         .windowStyle(.hiddenTitleBar)
 
-        // Uses MenuBarExtra(_:systemImage:) with universal macOS Eclipse SF Symbols so the
-        // menu bar icon is 100% guaranteed to appear on every macOS display without Assets.car
-        MenuBarExtra("AuraSense", systemImage: menuBarEclipseSymbolName) {
+        // Uses MenuBarExtra with universal macOS Eclipse SF Symbols so the
+        // menu bar icon is 100% guaranteed to appear on every macOS display without Assets.car.
+        // The installer bundle shows no menu bar item.
+        MenuBarExtra(isInserted: .constant(!launchedAsInstaller)) {
             MenuBarPopoverView()
+        } label: {
+            Image(systemName: menuBarEclipseSymbolName)
+                .accessibilityLabel("AuraSense")
         }
         .menuBarExtraStyle(.window)
 
         Settings {
-            SecuritySettingsView()
-                .frame(width: 680, height: 560)
+            if launchedAsInstaller {
+                Text("Settings are available in AuraSense after installation.")
+                    .padding(24)
+            } else {
+                SecuritySettingsView()
+                    .frame(width: 680, height: 560)
+            }
         }
     }
 
     /// Universal macOS SF Symbol representing the Eclipse + Proximity state in the Menu Bar.
     private var menuBarEclipseSymbolName: String {
+        if launchedAsInstaller {
+            return "moon.circle.fill"
+        }
+        let engine = BLEProximityEngine.shared
         if engine.isCalibratingDeskSignal {
             return "dot.radiowaves.left.and.right"
         }

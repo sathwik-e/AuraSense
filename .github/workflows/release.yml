@@ -1,41 +1,68 @@
-name: Publish AuraSense 0.1 Release
+name: Publish AuraSense Release
 
+# Builds AuraSense from source on macOS and publishes the DMG + zipped app for a version tag.
+# Push a tag that matches macos-host/Resources/Info.plist, e.g. CFBundleShortVersionString 1.1 -> tag v1.1
 on:
   push:
-    branches:
-      - main
-      - "0.1"
     tags:
-      - "0.1"
-      - "v0.1"
+      - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)publish, e.g. v1.1"
+        required: true
 
 permissions:
   contents: write
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: macos-14
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
-      - name: Package AuraSense.app bundle for GitHub Releases
+      - name: Verify Info.plist version matches the tag
         run: |
-          chmod +x AuraSense.app/Contents/MacOS/AuraSense
-          zip -r -y AuraSense.app.zip AuraSense.app
+          PLIST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' macos-host/Resources/Info.plist)"
+          TAG_VERSION="${RELEASE_TAG#v}"
+          echo "Info.plist version: ${PLIST_VERSION} / tag version: ${TAG_VERSION}"
+          if [ "${PLIST_VERSION}" != "${TAG_VERSION}" ]; then
+            echo "::error::CFBundleShortVersionString (${PLIST_VERSION}) does not match tag ${RELEASE_TAG}"
+            exit 1
+          fi
 
-      - name: Create GitHub Release 0.1 with DMG and App Bundle
+      - name: Build and package AuraSense (Swift app + DMG)
+        # Builds only the macOS host app; the Rust crate is not needed for the release assets.
+        # Signs ad-hoc ("-"). To sign with a Developer ID, import the certificate into the runner
+        # keychain first and set SIGN_IDENTITY for this step.
+        env:
+          SIGN_IDENTITY: "-"
+        run: |
+          chmod +x macos-host/Scripts/build_and_package.sh
+          macos-host/Scripts/build_and_package.sh
+
+      - name: Verify release assets exist
+        run: |
+          test -f releases/v1/AuraSense.dmg
+          test -f releases/v1/AuraSense.app.zip
+          ls -lh releases/v1/AuraSense.dmg releases/v1/AuraSense.app.zip
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "0.1"
-          name: "AuraSense 0.1"
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: AuraSense ${{ env.RELEASE_TAG }}
           body_path: RELEASE_NOTES.md
           draft: false
           prerelease: false
+          fail_on_unmatched_files: true
           files: |
-            AuraSense.dmg
-            releases/v0.1/AuraSense-0.1.dmg
-            AuraSense.app.zip
+            releases/v1/AuraSense.dmg
+            releases/v1/AuraSense.app.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

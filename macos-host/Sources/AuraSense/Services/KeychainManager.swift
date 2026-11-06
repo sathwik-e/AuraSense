@@ -1,13 +1,21 @@
 import Foundation
 import Security
+import LocalAuthentication
 
 /// Manages secure storage and retrieval of the macOS login password in the system Keychain.
 /// Used exclusively by MacLockUnlockController when typing credentials via Accessibility events.
 public final class KeychainManager: @unchecked Sendable {
     public static let shared = KeychainManager()
 
+    /// Posted on `NotificationCenter.default` (main thread) after the stored password is saved or deleted.
+    public static let passwordDidChangeNotification = Notification.Name("com.aurasense.keychainPasswordDidChange")
+
     private let serviceName = "com.aurasense.mac.unlock-credentials"
     private let accountName = "macOSLoginPassword"
+
+    /// Cached result of the attribute-only existence query; invalidated on save/delete.
+    private let cacheLock = NSLock()
+    private var cachedHasStoredPassword: Bool?
 
     private init() {}
 
@@ -61,17 +69,25 @@ public final class KeychainManager: @unchecked Sendable {
         } else {
             throw KeychainError.unexpectedStatus(status)
         }
+        passwordDidChange(nowStored: true)
     }
 
     /// Reads the stored macOS password from the Keychain, or returns nil if none is saved.
-    public func retrievePassword() -> String? {
-        let query: [String: Any] = [
+    /// Pass `allowUserInteraction: false` from automated paths (proximity unlock, bridge, BLE) so a
+    /// Keychain ACL prompt can never block the caller while the screen is locked; the read fails fast instead.
+    public func retrievePassword(allowUserInteraction: Bool = true) -> String? {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
             kSecAttrAccount as String: accountName,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
+        if !allowUserInteraction {
+            let context = LAContext()
+            context.interactionNotAllowed = true
+            query[kSecUseAuthenticationContext as String] = context
+        }
 
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
@@ -83,10 +99,50 @@ public final class KeychainManager: @unchecked Sendable {
         return password
     }
 
-    /// Returns true if a non-empty password is currently stored in the Keychain.
+    /// Returns true if a password item is currently stored in the Keychain.
+    /// Attribute-only query: never decrypts the secret, so it cannot raise a Keychain ACL prompt.
+    /// The result is cached until the next save/delete, so it is cheap to call from view bodies.
     public func hasStoredPassword() -> Bool {
-        guard let pw = retrievePassword() else { return false }
-        return !pw.isEmpty
+        cacheLock.lock()
+        if let cached = cachedHasStoredPassword {
+            cacheLock.unlock()
+            return cached
+        }
+        cacheLock.unlock()
+
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecAttrAccount as String: accountName,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        let exists = status == errSecSuccess
+
+        // Only cache definitive answers; transient errors (e.g. keychain locked) are re-queried.
+        if status == errSecSuccess || status == errSecItemNotFound {
+            cacheLock.lock()
+            cachedHasStoredPassword = exists
+            cacheLock.unlock()
+        }
+        return exists
+    }
+
+    private func passwordDidChange(nowStored: Bool) {
+        cacheLock.lock()
+        cachedHasStoredPassword = nowStored
+        cacheLock.unlock()
+
+        let post = {
+            NotificationCenter.default.post(name: KeychainManager.passwordDidChangeNotification, object: nil)
+        }
+        if Thread.isMainThread {
+            post()
+        } else {
+            DispatchQueue.main.async(execute: post)
+        }
     }
 
     /// Removes the stored password from the Keychain.
@@ -100,5 +156,6 @@ public final class KeychainManager: @unchecked Sendable {
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw KeychainError.unexpectedStatus(status)
         }
+        passwordDidChange(nowStored: false)
     }
 }

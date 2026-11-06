@@ -339,11 +339,15 @@ public struct AuraRadarView: View {
                     Label("Instant Actions & Radar Sim", systemImage: "sparkles.tv")
                         .font(.system(size: 14, weight: .semibold, design: .rounded))
                     Spacer()
+                    #if DEBUG
+                    // Debug builds only: Sim Mode feeds fake RSSI and must not ship in release builds.
                     Toggle("Sim Mode", isOn: $engine.isSimulationMode)
                         .toggleStyle(.switch)
                         .controlSize(.small)
+                    #endif
                 }
 
+                #if DEBUG
                 if engine.isSimulationMode {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
@@ -379,6 +383,11 @@ public struct AuraRadarView: View {
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
+                #else
+                Text("Test locking your Mac or verify the Accessibility Keychain unlock sequence anytime.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                #endif
 
                 HStack(spacing: 10) {
                     Button {

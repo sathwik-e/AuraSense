@@ -16,8 +16,10 @@ public final class AuraStateBox<Value>: ObservableObject {
 public struct AuraState<Value>: DynamicProperty {
     @StateObject private var box: AuraStateBox<Value>
 
-    public init(wrappedValue: Value) {
-        _box = StateObject(wrappedValue: AuraStateBox(wrappedValue))
+    /// The initial value is an autoclosure handed straight to `StateObject`, so it is evaluated
+    /// only once per view identity (not on every parent re-render, e.g. Keychain lookups).
+    public init(wrappedValue: @autoclosure @escaping () -> Value) {
+        _box = StateObject(wrappedValue: AuraStateBox(wrappedValue()))
     }
 
     public var wrappedValue: Value {
