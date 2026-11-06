@@ -6,6 +6,7 @@ public struct MenuBarPopoverView: View {
     @ObservedObject var engine = BLEProximityEngine.shared
     @ObservedObject var lockController = MacLockUnlockController.shared
     @ObservedObject var dockManager = DockVisibilityManager.shared
+    @ObservedObject var persistence = BackgroundPersistenceManager.shared
     @Environment(\.openWindow) private var openWindow
 
     public init() {}
@@ -124,7 +125,8 @@ public struct MenuBarPopoverView: View {
             HStack(spacing: 8) {
                 Button {
                     Task { @MainActor in
-                        _ = await lockController.instantFillActivePasswordField()
+                        // Hide AuraSense first so focus returns to the app that owns the prompt.
+                        await lockController.instantFillAfterReturningFocus()
                     }
                 } label: {
                     Label("Fill Password", systemImage: "key.fill")
@@ -133,17 +135,7 @@ public struct MenuBarPopoverView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(AuraTheme.indigoGlow)
                 .controlSize(.small)
-                .help("Instant-fill Keychain password into active prompt (⌃⌥⌘Space)")
-
-                Button {
-                    lockController.copyPasswordTemporarilyForPaste()
-                } label: {
-                    Label("4s Copy (⌘V)", systemImage: "doc.on.clipboard")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("Copy Keychain password for 4 seconds then auto-wipe (⌃⌥⌘V)")
+                .help("Type your Keychain password into the active macOS system password prompt (⌃⌥⌘Space)")
             }
 
             // Quick Lock & Pause Grid
@@ -185,15 +177,13 @@ public struct MenuBarPopoverView: View {
             // Footer Navigation
             VStack(spacing: 4) {
                 Button {
-                    dockManager.showAppInForeground()
-                    openWindow(id: "main-dashboard")
+                    // Reuses the existing dashboard window instead of opening a duplicate.
+                    WindowRouter.shared.register(openWindow)
+                    WindowRouter.shared.showDashboard()
                 } label: {
                     HStack {
                         Label("Open AuraSense Dashboard…", systemImage: "macwindow")
                         Spacer()
-                        Text("⌘D")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 4)
@@ -201,7 +191,8 @@ public struct MenuBarPopoverView: View {
                 .buttonStyle(.plain)
 
                 Button {
-                    dockManager.showAppInForeground()
+                    NSApplication.shared.setActivationPolicy(.regular)
+                    NSApplication.shared.activate(ignoringOtherApps: true)
                     openWindow(id: "installer-wizard")
                 } label: {
                     HStack {
@@ -219,7 +210,15 @@ public struct MenuBarPopoverView: View {
                     NSApplication.shared.terminate(nil)
                 } label: {
                     HStack {
-                        Label("Quit AuraSense", systemImage: "power")
+                        VStack(alignment: .leading, spacing: 1) {
+                            Label("Quit AuraSense", systemImage: "power")
+                            if persistence.keepRunningInBackground {
+                                Text("Protection keeps running in the background")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.leading, 22)
+                            }
+                        }
                         Spacer()
                         Text("⌘Q")
                             .font(.system(size: 11))
@@ -229,9 +228,29 @@ public struct MenuBarPopoverView: View {
                     .padding(.vertical, 4)
                 }
                 .buttonStyle(.plain)
+
+                if persistence.keepRunningInBackground {
+                    Button {
+                        persistence.requestStopCompletely()
+                    } label: {
+                        HStack {
+                            Label("Stop Completely…", systemImage: "stop.circle")
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Image(systemName: "lock.fill")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 2)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Requires your Mac password")
+                }
             }
         }
         .padding(16)
         .frame(width: 330)
+        .onAppear { WindowRouter.shared.register(openWindow) }
     }
 }

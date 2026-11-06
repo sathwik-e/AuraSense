@@ -299,10 +299,22 @@ class HFSPlusBuilder:
             struct.pack_into('>IIbbHH', buf, 0, fLink, bLink, kind, height, len(rec_blobs), 0)
             pos = 14
             offsets = [pos]
+            # This writer puts every catalog record into ONE leaf node (no index nodes / node
+            # splitting). Fail loudly instead of silently growing the buffer, overwriting the
+            # offset table and producing a corrupt DMG.
+            needed = 14 + sum(len(b) for b in rec_blobs) + 2 * (len(rec_blobs) + 1)
+            if needed > NODE_SIZE:
+                raise SystemExit(
+                    f"create_dmg_image.py: B-tree node overflow ({needed} > {NODE_SIZE} bytes, "
+                    f"{len(rec_blobs)} records). Too many files for the single-leaf HFS+ catalog; "
+                    "reduce bundle resources or build the image with hdiutil instead."
+                )
             for blob in rec_blobs:
                 buf[pos:pos+len(blob)] = blob
                 pos += len(blob)
                 offsets.append(pos)
+            if len(buf) != NODE_SIZE:
+                raise SystemExit(f"create_dmg_image.py: B-tree node size changed to {len(buf)} bytes")
             for idx, off in enumerate(offsets):
                 struct.pack_into('>H', buf, NODE_SIZE - 2 * (idx + 1), off)
             return bytes(buf)
@@ -427,6 +439,8 @@ class HFSPlusBuilder:
             cat_btree = self._build_btree(cat_records, 516, is_catalog=True)
             ext_btree = self._build_btree([], 10, is_catalog=False)
 
+            if len(cat_btree) % BLOCK_SIZE or len(ext_btree) % BLOCK_SIZE:
+                raise SystemExit("create_dmg_image.py: B-tree file is not a whole number of allocation blocks")
             cat_blocks = len(cat_btree) // BLOCK_SIZE
             ext_blocks = len(ext_btree) // BLOCK_SIZE
             self.ext_start_block = 2
@@ -436,6 +450,14 @@ class HFSPlusBuilder:
         total_used_blocks = self.data_region_start_block + self.current_data_block
         total_blocks = max(total_used_blocks + 64, 2100)
         free_blocks = total_blocks - total_used_blocks - 1
+        # The allocation bitmap is a single block (1 bit per allocation block), so the volume can
+        # describe at most BLOCK_SIZE * 8 blocks (128 MiB). Fail loudly instead of an IndexError
+        # or a truncated bitmap.
+        if total_blocks > BLOCK_SIZE * 8:
+            raise SystemExit(
+                f"create_dmg_image.py: volume needs {total_blocks} blocks but the single-block "
+                f"allocation bitmap covers only {BLOCK_SIZE * 8} ({BLOCK_SIZE * 8 * BLOCK_SIZE // (1024 * 1024)} MiB)."
+            )
 
         b0 = bytearray(BLOCK_SIZE)
         now = hfs_time()

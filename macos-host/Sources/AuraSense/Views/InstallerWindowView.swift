@@ -2,10 +2,12 @@ import SwiftUI
 import AppKit
 import CoreBluetooth
 
-/// Comprehensive 4-Step Guided Setup & Permissions Assistant for AuraSense v1.0.
-/// Automatically installs AuraSense.app to `/Applications`, prompts for Accessibility and Bluetooth
-/// permissions, guides the user through selecting their Bluetooth device and running the 10-second
-/// desk calibration scan, and saves their Mac login password in the Keychain.
+/// Comprehensive 4-Step Guided Setup & Permissions Assistant for AuraSense v1.1.
+/// Runs inside the real app (`com.aurasense.mac.app`) so device binding, calibration, TCC grants and
+/// the Keychain item all belong to /Applications/AuraSense.app. Offers an explicit button to install
+/// into `/Applications`, prompts for Accessibility and Bluetooth permissions, guides the user through
+/// selecting their Bluetooth device and running the 10-second desk calibration scan, and saves their
+/// Mac login password in the Keychain.
 public struct InstallerWindowView: View {
     @ObservedObject var engine = BLEProximityEngine.shared
     @ObservedObject var lockController = MacLockUnlockController.shared
@@ -20,6 +22,7 @@ public struct InstallerWindowView: View {
     @AuraState private var quickPassword: String = ""
     @AuraState private var showPasswordPlain: Bool = false
     @AuraState private var savedPasswordSuccess: Bool = KeychainManager.shared.hasStoredPassword()
+    @AuraState private var passwordSaveError: String = ""
     @AuraState private var ringPulse: Bool = false
 
     public var onComplete: (() -> Void)?
@@ -87,19 +90,22 @@ public struct InstallerWindowView: View {
         .onAppear {
             ringPulse = true
             isInstalledInApplications = lockController.isInstalledInApplications
-            if !isInstalledInApplications || !lockController.isRunningFromApplications {
-                performCopyToApplications()
+            // Installing only happens when the user presses the Install button (no auto-install,
+            // which re-signed the app and invalidated the Accessibility grant on every launch).
+            if isInstalledInApplications && lockController.isRunningFromApplications && currentStep == 0 {
+                currentStep = 1
             }
-            if let existing = KeychainManager.shared.retrievePassword(), !existing.isEmpty {
-                quickPassword = existing
-                savedPasswordSuccess = true
-            }
+            // Never pre-fill the stored secret into a revealable field.
+            savedPasswordSuccess = KeychainManager.shared.hasStoredPassword()
             engine.startScanning()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: KeychainManager.passwordDidChangeNotification)) { _ in
+            savedPasswordSuccess = KeychainManager.shared.hasStoredPassword()
         }
         .onChange(of: currentStep) { _, newStep in
             if newStep == 1 {
                 if !lockController.refreshAccessibilityStatus(prompt: false) {
-                    lockController.promptForAccessibilityPermission(resetStaleEntryIfNeeded: true, openSettingsPane: true)
+                    lockController.promptForAccessibilityPermission(resetStaleEntryIfNeeded: false, openSettingsPane: true)
                 }
                 engine.promptForBluetoothPermission()
             } else if newStep == 2 {
@@ -118,7 +124,7 @@ public struct InstallerWindowView: View {
                 HStack(spacing: 10) {
                     AuraBrandWordmarkView(size: 19, tracking: 3.4)
                     AuraStatusPill(
-                        title: "v1.0 Guided Setup",
+                        title: "v1.1 Guided Setup",
                         symbol: "checkmark.shield.fill",
                         color: AuraTheme.cyanGlow
                     )
@@ -255,6 +261,13 @@ public struct InstallerWindowView: View {
                             symbol: isInstalledInApplications ? "checkmark.circle.fill" : "arrow.down.app.fill",
                             color: isInstalledInApplications ? AuraTheme.emeraldGlow : AuraTheme.amberGlow
                         )
+                        if !installStatusMessage.isEmpty {
+                            Text(installStatusMessage)
+                                .font(.system(size: 12))
+                                .foregroundStyle(isInstalledInApplications ? AuraTheme.emeraldGlow : AuraTheme.amberGlow)
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: 520)
+                        }
                         Text("Once setup is complete, closing the window removes AuraSense from the Dock so it lives quietly in your macOS Menu Bar.")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
@@ -337,7 +350,7 @@ public struct InstallerWindowView: View {
 
                     VStack(alignment: .trailing, spacing: 6) {
                         Button {
-                            lockController.promptForAccessibilityPermission(resetStaleEntryIfNeeded: true, openSettingsPane: true)
+                            lockController.promptForAccessibilityPermission(resetStaleEntryIfNeeded: false, openSettingsPane: true)
                         } label: {
                             Label(
                                 lockController.isAccessibilityTrusted ? "Granted (Re-Verify)" : "Prompt Permission…",
@@ -453,15 +466,17 @@ public struct InstallerWindowView: View {
                             HStack(spacing: 10) {
                                 ProgressView()
                                     .controlSize(.small)
-                                Text("Scanning for nearby Bluetooth devices… Make sure Bluetooth is on or click 'Use Simulated iPhone' to test.")
+                                Text("Scanning for nearby Bluetooth devices… Make sure Bluetooth is on and your device is nearby.")
                                     .font(.system(size: 12))
                                     .foregroundStyle(.secondary)
                                 Spacer()
+                                #if DEBUG
                                 Button("Use Simulated iPhone") {
                                     engine.isSimulationMode = true
                                 }
                                 .buttonStyle(.bordered)
                                 .controlSize(.small)
+                                #endif
                             }
                             .padding(10)
                         } else {
@@ -585,9 +600,9 @@ public struct InstallerWindowView: View {
                     HStack(spacing: 10) {
                         Group {
                             if showPasswordPlain {
-                                TextField("Enter your Mac login password…", text: $quickPassword)
+                                TextField(savedPasswordSuccess ? "Saved. Type a new password to replace it…" : "Enter your Mac login password…", text: $quickPassword)
                             } else {
-                                SecureField("Enter your Mac login password…", text: $quickPassword)
+                                SecureField(savedPasswordSuccess ? "Saved. Type a new password to replace it…" : "Enter your Mac login password…", text: $quickPassword)
                             }
                         }
                         .textFieldStyle(.roundedBorder)
@@ -600,14 +615,20 @@ public struct InstallerWindowView: View {
                         .buttonStyle(.bordered)
 
                         Button {
-                            try? KeychainManager.shared.savePassword(quickPassword)
-                            savedPasswordSuccess = KeychainManager.shared.hasStoredPassword()
+                            _ = saveQuickPassword()
                         } label: {
                             Label("Save Password", systemImage: "checkmark.shield.fill")
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(AuraTheme.emeraldGlow)
                         .disabled(quickPassword.isEmpty)
+                    }
+
+                    if !passwordSaveError.isEmpty {
+                        Label(passwordSaveError, systemImage: "exclamationmark.triangle.fill")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(AuraTheme.crimsonGlow)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 .padding(12)
@@ -642,7 +663,7 @@ public struct InstallerWindowView: View {
                         .foregroundStyle(AuraTheme.emeraldGlow)
                         .textSelection(.enabled)
 
-                    Text("1. Open this URL in Safari on your iPhone — your Mac password auto-fills as soon as the page opens.\n2. Tap Share > Add to Home Screen in Safari for one-tap access anytime.")
+                    Text("1. Open this private pairing URL in Safari on your iPhone — your Mac password auto-fills as soon as the page opens.\n2. Tap Share > Add to Home Screen in Safari for one-tap access anytime. Keep this URL private; it contains your pairing token.")
                         .font(.system(size: 11.5))
                         .foregroundStyle(.secondary)
                 }
@@ -667,8 +688,10 @@ public struct InstallerWindowView: View {
             Spacer()
 
             Button("Finish & Live in Menu Bar") {
-                if !quickPassword.isEmpty {
-                    try? KeychainManager.shared.savePassword(quickPassword)
+                if !quickPassword.isEmpty, !saveQuickPassword() {
+                    // Stay on the password step so the failure is visible.
+                    withAnimation { currentStep = 3 }
+                    return
                 }
                 engine.hasCompletedOnboarding = true
                 onComplete?()
@@ -690,8 +713,8 @@ public struct InstallerWindowView: View {
                 .tint(AuraTheme.cyanGlow)
             } else {
                 Button {
-                    if !quickPassword.isEmpty {
-                        try? KeychainManager.shared.savePassword(quickPassword)
+                    if !quickPassword.isEmpty, !saveQuickPassword() {
+                        return
                     }
                     engine.hasCompletedOnboarding = true
                     onComplete?()
@@ -706,15 +729,41 @@ public struct InstallerWindowView: View {
         }
     }
 
+    // MARK: - Keychain Helper
+
+    /// Saves the typed password. Reports success only when the Keychain write itself succeeded,
+    /// and shows the error otherwise (a stale saved password must not read as "Saved").
+    @discardableResult
+    private func saveQuickPassword() -> Bool {
+        guard !AuraLaunchMode.isInstallerBundle else {
+            // The installer bundle must never own the Keychain item (its ACL would name the installer).
+            passwordSaveError = "Open AuraSense from /Applications to save your password."
+            return false
+        }
+        guard !quickPassword.isEmpty else { return false }
+        do {
+            try KeychainManager.shared.savePassword(quickPassword)
+            savedPasswordSuccess = true
+            passwordSaveError = ""
+            quickPassword = ""
+            showPasswordPlain = false
+            return true
+        } catch {
+            passwordSaveError = "Could not save password: \(error.localizedDescription)"
+            return false
+        }
+    }
+
     // MARK: - Installation Helper
 
     private func performCopyToApplications() {
+        guard !isInstallingToApplications else { return }
         isInstallingToApplications = true
         installProgress = 0.35
         installStatusMessage = "Installing AuraSense.app to /Applications…"
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-            let (ok, message) = lockController.installToApplicationsFolder()
+        Task { @MainActor in
+            let (ok, message) = await lockController.installToApplicationsFolder()
             installProgress = 1.0
             installStatusMessage = message
             isInstalledInApplications = ok || lockController.isInstalledInApplications
@@ -725,9 +774,153 @@ public struct InstallerWindowView: View {
                     detail: message
                 )
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                isInstallingToApplications = false
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            isInstallingToApplications = false
+        }
+    }
+}
+
+// MARK: - Installer Bundle ("Install AuraSense.app" on the DMG)
+
+/// Shown when the DMG's "Install AuraSense.app" bundle runs. It only installs:
+/// copies AuraSense.app into /Applications, launches `/Applications/AuraSense.app --setup` (which runs
+/// the Guided Setup under the real bundle identifier) and quits. It never binds devices, requests
+/// permissions or stores the Keychain password.
+public struct InstallerBundleView: View {
+    private enum Phase: Equatable {
+        case installing
+        case launching
+        case failed(String)
+    }
+
+    @AuraState private var phase: Phase = .installing
+    @AuraState private var hasStarted: Bool = false
+
+    private static let installedAppPath = "/Applications/AuraSense.app"
+
+    public init() {}
+
+    public var body: some View {
+        ZStack {
+            AuraTheme.deepMidnight
+                .ignoresSafeArea()
+
+            VStack(spacing: 18) {
+                AuraEclipseLogoView(size: 72)
+                AuraBrandWordmarkView(size: 19, tracking: 3.4)
+
+                switch phase {
+                case .installing:
+                    ProgressView()
+                        .controlSize(.regular)
+                    Text("Installing AuraSense.app into /Applications…")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.80))
+                case .launching:
+                    ProgressView()
+                        .controlSize(.regular)
+                    Text("Installed. Opening AuraSense to finish setup…")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(AuraTheme.emeraldGlow)
+                case .failed(let message):
+                    failureContent(message)
+                }
+            }
+            .padding(28)
+        }
+        .frame(width: 520, height: 400)
+        .preferredColorScheme(.dark)
+        .onAppear {
+            guard !hasStarted else { return }
+            hasStarted = true
+            runInstall()
+        }
+    }
+
+    private func failureContent(_ message: String) -> some View {
+        VStack(spacing: 12) {
+            Label("Automatic installation didn't finish", systemImage: "exclamationmark.triangle.fill")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(AuraTheme.amberGlow)
+            Text(message)
+                .font(.system(size: 12))
+                .foregroundStyle(.white.opacity(0.78))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("You can drag AuraSense.app into the Applications folder yourself, then open it from /Applications.")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 10) {
+                Button {
+                    runInstall()
+                } label: {
+                    Label("Try Again", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(AuraTheme.indigoGlow)
+
+                Button {
+                    revealSourceAppInFinder()
+                } label: {
+                    Label("Show in Finder", systemImage: "folder")
+                }
+                .buttonStyle(.bordered)
+
+                Button("Quit") {
+                    NSApplication.shared.terminate(nil)
+                }
+                .buttonStyle(.bordered)
             }
         }
+        .frame(maxWidth: 440)
+    }
+
+    private func runInstall() {
+        phase = .installing
+        Task { @MainActor in
+            let (ok, message) = await MacLockUnlockController.shared.installToApplicationsFolder()
+            let installed = FileManager.default.fileExists(atPath: "\(Self.installedAppPath)/Contents/MacOS/AuraSense")
+            guard ok, installed else {
+                phase = .failed(message)
+                return
+            }
+            phase = .launching
+            launchInstalledAppAndQuit()
+        }
+    }
+
+    private func launchInstalledAppAndQuit() {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.arguments = ["--setup"]
+        configuration.activates = true
+        // A stale running copy must not simply be re-activated; the fresh one replaces it.
+        configuration.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(
+            at: URL(fileURLWithPath: Self.installedAppPath),
+            configuration: configuration
+        ) { _, error in
+            Task { @MainActor in
+                if let error {
+                    phase = .failed("AuraSense was installed but could not be opened: \(error.localizedDescription). Open it from /Applications.")
+                    return
+                }
+                // The installer bundle isn't the main app, so termination is always allowed.
+                NSApplication.shared.terminate(nil)
+            }
+        }
+    }
+
+    private func revealSourceAppInFinder() {
+        let parentDir = (Bundle.main.bundlePath as NSString).deletingLastPathComponent
+        let sibling = (parentDir as NSString).appendingPathComponent("AuraSense.app")
+        if FileManager.default.fileExists(atPath: sibling) {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: sibling)])
+        } else {
+            NSWorkspace.shared.open(URL(fileURLWithPath: parentDir))
+        }
+        NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications"))
     }
 }

@@ -49,6 +49,11 @@ public struct DeviceScannerView: View {
                         Text("Select the iPhone, Apple Watch, AirPods, or BLE security tag that should unlock your Mac when nearby.")
                             .font(.system(size: 13))
                             .foregroundStyle(.secondary)
+                        if !engine.selectedDeviceID.isEmpty {
+                            Label("Changing or removing the trusted device requires your Mac password. AuraSense can't fill it in for you.", systemImage: "lock.shield")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     Spacer()
 
@@ -114,11 +119,14 @@ public struct DeviceScannerView: View {
                             }
                             .buttonStyle(.bordered)
 
+                            #if DEBUG
+                            // Debug builds only: simulated keys must never ship in release builds.
                             Button("Add Simulated iPhone Key") {
                                 engine.isSimulationMode = true
                             }
                             .buttonStyle(.borderedProminent)
                             .tint(AuraTheme.indigoGlow)
+                            #endif
                         }
                         .padding(.top, 4)
                     }
@@ -201,7 +209,7 @@ public struct DeviceScannerView: View {
                         Button {
                             engine.bindDevice(device)
                         } label: {
-                            Label("Bind as Aura Key", systemImage: "key.fill")
+                            Label(engine.selectedDeviceID.isEmpty ? "Bind as Aura Key" : "Switch to This Key", systemImage: engine.selectedDeviceID.isEmpty ? "key.fill" : "lock.rotation")
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(AuraTheme.indigoGlow)

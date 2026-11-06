@@ -4,6 +4,7 @@ public struct SecuritySettingsView: View {
     @ObservedObject var engine = BLEProximityEngine.shared
     @ObservedObject var lockController = MacLockUnlockController.shared
     @ObservedObject var dockManager = DockVisibilityManager.shared
+    @ObservedObject var persistence = BackgroundPersistenceManager.shared
 
     @AuraState private var passwordInput: String = ""
     @AuraState private var showPassword: Bool = false
@@ -28,9 +29,11 @@ public struct SecuritySettingsView: View {
             lockController.refreshAccessibilityStatus(prompt: false)
             lockController.refreshExternalMonitorTopology()
             hasStoredPassword = KeychainManager.shared.hasStoredPassword()
-            if let existing = KeychainManager.shared.retrievePassword() {
-                passwordInput = existing
-            }
+            // Never pre-fill the stored secret: the reveal button would expose it to anyone at the Mac.
+            passwordInput = ""
+        }
+        .onReceive(NotificationCenter.default.publisher(for: KeychainManager.passwordDidChangeNotification)) { _ in
+            hasStoredPassword = KeychainManager.shared.hasStoredPassword()
         }
     }
 
@@ -112,9 +115,9 @@ public struct SecuritySettingsView: View {
                 HStack(spacing: 10) {
                     Group {
                         if showPassword {
-                            TextField("Enter your macOS login password…", text: $passwordInput)
+                            TextField(hasStoredPassword ? "Saved. Type a new password to replace it…" : "Enter your macOS login password…", text: $passwordInput)
                         } else {
-                            SecureField("Enter your macOS login password…", text: $passwordInput)
+                            SecureField(hasStoredPassword ? "Saved. Type a new password to replace it…" : "Enter your macOS login password…", text: $passwordInput)
                         }
                     }
                     .textFieldStyle(.roundedBorder)
@@ -170,7 +173,7 @@ public struct SecuritySettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                // Alternative 1: Global Hotkey (⌃⌥⌘Space) & 4s Concealed Clipboard (⌃⌥⌘V)
+                // Alternative 1: Global Hotkey (⌃⌥⌘Space)
                 HStack(alignment: .center, spacing: 14) {
                     Image(systemName: "command.square.fill")
                         .font(.system(size: 24))
@@ -178,9 +181,9 @@ public struct SecuritySettingsView: View {
                         .frame(width: 34)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("1. On-Demand Instant Fill Hotkey (⌃⌥⌘Space) & 4s Paste (⌃⌥⌘V)")
+                        Text("1. On-Demand Instant Fill Hotkey (⌃⌥⌘Space)")
                             .font(.system(size: 13, weight: .semibold))
-                        Text("Whenever a password prompt appears on your external monitor, press ⌃⌥⌘Space to type your password + Return immediately, or ⌃⌥⌘V to copy it for 4 seconds (auto-wipes after 4s).")
+                        Text("When a macOS system password prompt (Keychain, admin authorization) appears, press ⌃⌥⌘Space to type your password + Return. For your security it only fills genuine macOS system prompts — never web pages, other apps, or AuraSense's own prompts — and the password is never copied to the clipboard.")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
@@ -327,18 +330,67 @@ public struct SecuritySettingsView: View {
                 Divider()
 
                 Toggle(isOn: Binding(
-                    get: { engine.launchAtLogin },
+                    get: { persistence.keepRunningInBackground },
+                    set: { newValue in
+                        if newValue {
+                            persistence.enableKeepRunningInBackground()
+                        } else {
+                            persistence.requestDisableKeepRunningInBackground()
+                        }
+                    }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text("Keep AuraSense Running After Quit")
+                                .font(.system(size: 13, weight: .medium))
+                            Image(systemName: "lock.fill")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                                .help("Turning this off requires your Mac password")
+                        }
+                        Text("Quit hides AuraSense but proximity lock and unlock keep working from the menu bar. macOS relaunches it if it's force-quit or crashes, and starts it at login. Use Stop Completely (Mac password) to fully quit.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                        if let status = persistence.statusMessage {
+                            Text(status)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(AuraTheme.amberGlow)
+                        }
+                    }
+                }
+                .toggleStyle(.switch)
+
+                if persistence.keepRunningInBackground {
+                    HStack {
+                        Spacer()
+                        Button {
+                            persistence.requestStopCompletely()
+                        } label: {
+                            Label("Stop AuraSense Completely…", systemImage: "stop.circle")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+
+                Divider()
+
+                Toggle(isOn: Binding(
+                    get: { persistence.keepRunningInBackground || engine.launchAtLogin },
                     set: { engine.setLaunchAtLogin($0) }
                 )) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Launch AuraSense Automatically at Login")
                             .font(.system(size: 13, weight: .medium))
-                        Text("Starts quietly in the macOS Menu Bar when you log in.")
+                        Text(persistence.keepRunningInBackground
+                             ? "Included with Keep AuraSense Running After Quit."
+                             : "Starts quietly in the macOS Menu Bar when you log in.")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
                 }
                 .toggleStyle(.switch)
+                .disabled(persistence.keepRunningInBackground)
             }
         }
     }
@@ -348,6 +400,8 @@ public struct SecuritySettingsView: View {
     private func savePasswordToKeychain() {
         do {
             try KeychainManager.shared.savePassword(passwordInput)
+            passwordInput = ""
+            showPassword = false
             hasStoredPassword = true
             statusBannerIsError = false
             statusBannerText = "Password securely saved in macOS login Keychain."

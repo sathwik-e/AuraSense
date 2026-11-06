@@ -6,6 +6,7 @@ public enum DashboardSection: String, CaseIterable, Identifiable {
     case thresholds = "Range & Thresholds"
     case faceIdBridge = "Instant Auto-Fill"
     case security = "Security & Keychain"
+    case unlockExperience = "Sound & Animation"
     case activity = "Activity Log"
 
     public var id: String { rawValue }
@@ -17,6 +18,7 @@ public enum DashboardSection: String, CaseIterable, Identifiable {
         case .thresholds: return "slider.horizontal.below.waveform"
         case .faceIdBridge: return "bolt.horizontal.circle.fill"
         case .security: return "lock.shield.fill"
+        case .unlockExperience: return "speaker.wave.2.circle.fill"
         case .activity: return "clock.arrow.circlepath"
         }
     }
@@ -25,8 +27,11 @@ public enum DashboardSection: String, CaseIterable, Identifiable {
 public struct MainDashboardView: View {
     @ObservedObject var engine = BLEProximityEngine.shared
     @ObservedObject var lockController = MacLockUnlockController.shared
+    @Environment(\.openWindow) private var openWindow
     @AuraState private var selectedSection: DashboardSection = .radar
-    @AuraState private var showGuidedSetupWizard: Bool = BLEProximityEngine.shared.needsGuidedSetup
+    @AuraState private var showGuidedSetupWizard: Bool = BLEProximityEngine.shared.needsGuidedSetup || AuraLaunchMode.requestedGuidedSetup
+    /// Cached so `body` never queries the Keychain; refreshed on KeychainManager change notifications.
+    @AuraState private var hasStoredPassword: Bool = KeychainManager.shared.hasStoredPassword()
 
     public init() {}
 
@@ -43,9 +48,22 @@ public struct MainDashboardView: View {
             }
         }
         .onAppear {
-            if engine.needsGuidedSetup {
+            WindowRouter.shared.register(openWindow)
+            if WindowRouter.shared.consumeInitialWindowSuppression() {
+                // Quiet relaunch by launchd: keep protecting from the menu bar only.
+                DispatchQueue.main.async {
+                    DockVisibilityManager.shared.hideFromDockImmediately()
+                }
+                return
+            }
+            hasStoredPassword = KeychainManager.shared.hasStoredPassword()
+            // `--setup` (installer hand-off) always opens Guided Setup once.
+            if WindowRouter.shared.consumeGuidedSetupRequest() || engine.needsGuidedSetup {
                 showGuidedSetupWizard = true
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: KeychainManager.passwordDidChangeNotification)) { _ in
+            hasStoredPassword = KeychainManager.shared.hasStoredPassword()
         }
     }
 
@@ -57,7 +75,7 @@ public struct MainDashboardView: View {
                     AuraEclipseLogoView(size: 36)
                     VStack(alignment: .leading, spacing: 2) {
                         AuraBrandWordmarkView(size: 13, tracking: 2.2)
-                        Text("BLE Proximity v1")
+                        Text("BLE Proximity v1.1")
                             .font(.system(size: 10.5, weight: .medium))
                             .foregroundStyle(.secondary)
                     }
@@ -87,7 +105,7 @@ public struct MainDashboardView: View {
 
                     if !lockController.isAccessibilityTrusted {
                         Button {
-                            lockController.promptForAccessibilityPermission(resetStaleEntryIfNeeded: true, openSettingsPane: true)
+                            lockController.promptForAccessibilityPermission(resetStaleEntryIfNeeded: false, openSettingsPane: true)
                         } label: {
                             Label("Prompt Permission", systemImage: "hand.raised.fill")
                                 .font(.system(size: 12, weight: .semibold))
@@ -115,7 +133,7 @@ public struct MainDashboardView: View {
             .navigationSplitViewColumnWidth(min: 215, ideal: 230, max: 260)
         } detail: {
             VStack(spacing: 0) {
-                if !lockController.isAccessibilityTrusted || !KeychainManager.shared.hasStoredPassword() || engine.selectedDeviceID.isEmpty {
+                if !lockController.isAccessibilityTrusted || !hasStoredPassword || engine.selectedDeviceID.isEmpty {
                     HStack(spacing: 12) {
                         Image(systemName: "exclamationmark.shield.fill")
                             .font(.system(size: 18, weight: .semibold))
@@ -137,7 +155,7 @@ public struct MainDashboardView: View {
 
                         if !lockController.isAccessibilityTrusted {
                             Button("Prompt Accessibility…") {
-                                lockController.promptForAccessibilityPermission(resetStaleEntryIfNeeded: true, openSettingsPane: true)
+                                lockController.promptForAccessibilityPermission(resetStaleEntryIfNeeded: false, openSettingsPane: true)
                             }
                             .buttonStyle(.borderedProminent)
                             .tint(AuraTheme.indigoGlow)
@@ -170,6 +188,8 @@ public struct MainDashboardView: View {
                         FaceIdKeychainBridgeView()
                     case .security:
                         SecuritySettingsView()
+                    case .unlockExperience:
+                        UnlockExperienceView()
                     case .activity:
                         ActivityLogView()
                     }

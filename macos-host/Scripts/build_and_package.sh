@@ -8,6 +8,33 @@ RUST_OUT_DIR="${CRATE_DIR}"
 RELEASES_DIR="${CRATE_DIR}/releases/v1"
 BUILD_DIR="${PROJECT_ROOT}/build"
 STAGING_DIR="${BUILD_DIR}/dmg_staging"
+ENTITLEMENTS="${PROJECT_ROOT}/Resources/AuraSense.entitlements"
+
+# Code-signing identity. Defaults to ad-hoc ("-").
+# NOTE: an ad-hoc signature's designated requirement is its cdhash, so EVERY rebuild gets a new
+# code identity: macOS drops the Accessibility (TCC) grant and the Keychain item's ACL no longer
+# matches, so users must re-grant Accessibility and may see a Keychain access prompt after updating.
+# For stable identity across builds set SIGN_IDENTITY to a Developer ID or a persistent
+# self-signed certificate name, e.g.  SIGN_IDENTITY="Developer ID Application: Name (TEAMID)".
+SIGN_IDENTITY="${SIGN_IDENTITY:--}"
+
+# Signs the inner executable, then the bundle (no --deep), with an explicit identifier and the
+# app entitlements. Hardened runtime is enabled only for real (non ad-hoc) identities.
+sign_bundle() {
+    local bundle="$1"
+    local identifier="$2"
+    local -a opts=(--force --sign "${SIGN_IDENTITY}" --identifier "${identifier}" --entitlements "${ENTITLEMENTS}" --timestamp=none)
+    if [[ "${SIGN_IDENTITY}" != "-" ]]; then
+        opts=(--force --sign "${SIGN_IDENTITY}" --identifier "${identifier}" --entitlements "${ENTITLEMENTS}" --options runtime --timestamp)
+    fi
+    codesign "${opts[@]}" "${bundle}/Contents/MacOS/AuraSense"
+    codesign "${opts[@]}" "${bundle}"
+}
+
+if [[ ! -f "${ENTITLEMENTS}" ]]; then
+    echo "error: missing entitlements file ${ENTITLEMENTS}" >&2
+    exit 1
+fi
 
 echo "==> [1/6] Generating AuraSense v1 Neon Orbit Eclipse icons, Menu Bar template icons, and DMG artwork..."
 cd "${PROJECT_ROOT}"
@@ -32,7 +59,7 @@ cp "${PROJECT_ROOT}/Resources/AppIcon.png" "${APP_BUNDLE}/Contents/Resources/App
 cp "${PROJECT_ROOT}/Resources/"AuraEclipse*Template*.png "${APP_BUNDLE}/Contents/Resources/"
 printf "APPL????" > "${APP_BUNDLE}/Contents/PkgInfo"
 
-codesign --force --deep --sign - "${APP_BUNDLE}"
+sign_bundle "${APP_BUNDLE}" "com.aurasense.mac.app"
 
 INSTALLER_BUNDLE="${BUILD_DIR}/Install AuraSense.app"
 rm -rf "${INSTALLER_BUNDLE}"
@@ -60,7 +87,7 @@ cp "${PROJECT_ROOT}/Resources/AppIcon.png" "${INSTALLER_BUNDLE}/Contents/Resourc
 cp "${PROJECT_ROOT}/Resources/"AuraEclipse*Template*.png "${INSTALLER_BUNDLE}/Contents/Resources/"
 printf "APPL????" > "${INSTALLER_BUNDLE}/Contents/PkgInfo"
 
-codesign --force --deep --sign - "${INSTALLER_BUNDLE}"
+sign_bundle "${INSTALLER_BUNDLE}" "com.aurasense.mac.installer"
 
 # Verify both bundles pass strict codesign verification
 codesign -vvv --deep --strict "${APP_BUNDLE}"

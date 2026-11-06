@@ -11,6 +11,9 @@ import ServiceManagement
 public final class BLEProximityEngine: NSObject, ObservableObject {
     public static let shared = BLEProximityEngine()
 
+    /// Minimum hysteresis deadband (dB) between the Unlock and Lock thresholds.
+    public static let minimumHysteresisGapDB: Double = 6.0
+
     // MARK: - Persisted User Configuration
 
     @AppStorage("aurasense.monitoringEnabled") public var monitoringEnabled: Bool = true {
@@ -24,16 +27,18 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
 
     @AppStorage("aurasense.unlockThresholdRSSI") public var unlockThresholdRSSI: Double = -62.0 {
         didSet {
-            if lockThresholdRSSI >= unlockThresholdRSSI - 4 {
-                lockThresholdRSSI = unlockThresholdRSSI - 6
+            let minGap = Self.minimumHysteresisGapDB
+            if lockThresholdRSSI > unlockThresholdRSSI - minGap {
+                lockThresholdRSSI = unlockThresholdRSSI - minGap
             }
             evaluateProximityState()
         }
     }
     @AppStorage("aurasense.lockThresholdRSSI") public var lockThresholdRSSI: Double = -76.0 {
         didSet {
-            if lockThresholdRSSI > unlockThresholdRSSI - 4 {
-                unlockThresholdRSSI = lockThresholdRSSI + 6
+            let minGap = Self.minimumHysteresisGapDB
+            if lockThresholdRSSI > unlockThresholdRSSI - minGap {
+                unlockThresholdRSSI = lockThresholdRSSI + minGap
             }
             evaluateProximityState()
         }
@@ -47,11 +52,19 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
     @AppStorage("aurasense.signalLossTimeoutSeconds") public var signalLossTimeoutSeconds: Double = 15.0
     @AppStorage("aurasense.smoothingFactor") public var smoothingFactor: Double = 0.32
     @AppStorage("aurasense.autoUnlockEnabled") public var autoUnlockEnabled: Bool = true
-    @AppStorage("aurasense.autoLockEnabled") public var autoLockEnabled: Bool = true
+    @AppStorage("aurasense.autoLockEnabled") public var autoLockEnabled: Bool = true {
+        didSet {
+            if !autoLockEnabled {
+                cancelGracePeriod(reason: "Auto-lock disabled")
+            }
+            evaluateProximityState()
+        }
+    }
     @AppStorage("aurasense.sleepDisplayOnLock") public var sleepDisplayOnLock: Bool = false
     @AppStorage("aurasense.wakeDisplayOnApproach") public var wakeDisplayOnApproach: Bool = true
     @AppStorage("aurasense.playSoundEffects") public var playSoundEffects: Bool = true
     @AppStorage("aurasense.onlyShowNamedDevices") public var onlyShowNamedDevices: Bool = false
+    /// Mirrors `SMAppService.mainApp.status == .enabled`; only written by `syncLaunchAtLoginStatus()`.
     @AppStorage("aurasense.launchAtLogin") public var launchAtLogin: Bool = false
     @AppStorage("aurasense.v101.hasCompletedGuidedSetup") public var hasCompletedOnboarding: Bool = false
 
@@ -62,10 +75,19 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
         selectedDeviceID.isEmpty
     }
 
+    /// True only when the bound (real, non-simulated) device has been heard within
+    /// `signalLossTimeoutSeconds` and its smoothed signal is at or above the lock threshold.
+    public var isBoundDevicePresent: Bool {
+        guard let device = boundRecord, !boundSignalLost else { return false }
+        return isFresh(device) && device.smoothedRSSI >= lockThresholdRSSI
+    }
+
     // MARK: - Published Runtime State
 
     @Published public private(set) var bluetoothState: CBManagerState = .unknown
     @Published public private(set) var discoveredDevices: [BLEDevice] = []
+    /// The device shown in the UI: the bound device, or the in-memory simulated device while Sim Mode is on.
+    /// Lock/unlock decisions never read this; they use the real bound device record.
     @Published public private(set) var trackedDevice: BLEDevice?
     @Published public private(set) var proximityState: ProximityState = .unconfigured
     @Published public private(set) var activityLog: [ActivityLogEntry] = []
@@ -80,13 +102,25 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
     @Published public private(set) var deskCalibrationSamplesCollected: Int = 0
     @Published public private(set) var deskCalibrationSummary: String = "Place your device on the desk and run a 10-second scan to record its baseline dBm and auto-optimize thresholds."
 
-    // Interactive Simulation Mode for testing & calibration without walking away
+    // Interactive Simulation Mode (visual preview only). The simulated device lives in memory,
+    // is never persisted or bound, and never drives real lock/unlock or the presence gate.
     @Published public var isSimulationMode: Bool = false {
         didSet {
+            guard isSimulationMode != oldValue else { return }
             if isSimulationMode {
+                // Simulated RSSI must never feed a calibration that persists real thresholds.
+                if isCalibratingDeskSignal {
+                    cancelDeskCalibration()
+                }
                 setupSimulatedDeviceIfNeeded()
                 applySimulatedRSSI(Int(simulatedRSSI))
+                appendLog(
+                    kind: .diagnostics,
+                    title: "Simulation Preview On",
+                    detail: "Simulated RSSI only moves the radar preview; real lock/unlock keeps following your bound device."
+                )
             } else {
+                teardownSimulatedDevice()
                 evaluateProximityState()
             }
         }
@@ -101,9 +135,19 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
 
     // MARK: - Internal Properties
 
+    private static let staleDeviceAgeSeconds: TimeInterval = 120
+    private static let maxDiscoveredDevices = 100
+    private static let deviceListPublishInterval: TimeInterval = 1.0
+    private static let minimumCalibrationSamples = 10
+    private static let maxConsecutiveUnlockFailures = 2
+
     private var centralManager: CBCentralManager!
     private var peripheralMap: [UUID: CBPeripheral] = [:]
     private var kalmanFilters: [UUID: KalmanRSSIFilter] = [:]
+    /// Source of truth for discovered devices; `discoveredDevices` is a throttled, sorted snapshot.
+    private var deviceStore: [UUID: BLEDevice] = [:]
+    private var deviceListDirty = false
+    private var lastDeviceListPublish: Date = .distantPast
     private var connectedPollTimer: Timer?
     private var watchdogTimer: Timer?
     private var graceCountdownTimer: Timer?
@@ -112,7 +156,29 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
     private var deskCalibrationTicks: Int = 0
     private var graceRemainingSeconds: Int = 0
     private var lastUnlockTriggerDate: Date = .distantPast
-    private var lastLockTriggerDate: Date = .distantPast
+    private var lastAutoLockDate: Date = .distantPast
+    private var lastManualLockDate: Date = .distantPast
+    private let engineStartDate = Date()
+
+    /// Set when the bound device has not been heard for `signalLossTimeoutSeconds`; cleared on the next real reading.
+    private var boundSignalLost = false
+    /// False after a manual lock: auto-unlock waits until the bound device has left (≤ lock threshold or signal loss).
+    private var autoUnlockArmed = true
+    /// False after an auto-lock: no further auto-lock until the bound device has returned (≥ unlock threshold).
+    private var autoLockArmed = true
+    private var unlockAttemptInFlight = false
+    private var consecutiveUnlockFailures = 0
+    private var autoUnlockSuspended = false
+    private var nextUnlockAllowedDate: Date = .distantPast
+    /// Suppresses the `selectedDeviceID` didSet evaluation while a bind/unbind is being applied.
+    private var isApplyingBinding = false
+    /// Authoritative trusted-device binding (Keychain-backed). UserDefaults is restored from this
+    /// whenever it is changed outside the password-gated bind/unbind flow.
+    private var trustedRecord: TrustedDeviceRecord?
+
+    private var simulatedDeviceID: UUID?
+    private var simulatedDevice: BLEDevice?
+    private var notificationObservers: [NSObjectProtocol] = []
 
     private override init() {
         super.init()
@@ -121,15 +187,86 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
             CBCentralManagerOptionShowPowerAlertKey: true
         ])
         centralManager.delegate = self
+        loadTrustedBinding()
+        syncLaunchAtLoginStatus()
+        observeSystemNotifications()
         startTimers()
         evaluateProximityState()
     }
 
+    // MARK: - Tamper-Resistant Binding
+
+    private func loadTrustedBinding() {
+        if let record = TrustedDeviceRecordStore.load() {
+            trustedRecord = record
+        } else if UUID(uuidString: selectedDeviceID) != nil {
+            // Upgrade from a version without the Keychain record: adopt the existing binding.
+            let record = TrustedDeviceRecord(id: selectedDeviceID, name: selectedDeviceName, category: selectedDeviceCategoryRaw)
+            trustedRecord = record
+            TrustedDeviceRecordStore.save(record)
+        } else {
+            trustedRecord = nil
+        }
+        enforceTrustedBinding()
+    }
+
+    /// Restores UserDefaults from the authoritative record if something outside AuraSense changed
+    /// it (e.g. `defaults write/delete`), so the trusted device can't be swapped without the Mac password.
+    private func enforceTrustedBinding() {
+        let expectedID = trustedRecord?.id ?? ""
+        guard selectedDeviceID != expectedID else { return }
+        let tamperedValue = selectedDeviceID
+        isApplyingBinding = true
+        selectedDeviceID = expectedID
+        selectedDeviceName = trustedRecord?.name ?? ""
+        if let category = trustedRecord?.category {
+            selectedDeviceCategoryRaw = category
+        }
+        isApplyingBinding = false
+        refreshTrackedDevice()
+        appendLog(
+            kind: .permission,
+            title: "Trusted Device Setting Restored",
+            detail: "The saved trusted device was changed outside AuraSense (to “\(tamperedValue.isEmpty ? "none" : String(tamperedValue.prefix(8)) + "…")”). It was restored; changing it requires your Mac password."
+        )
+    }
+
+    /// The CBCentralManager created in `init` already triggers the system Bluetooth prompt.
+    /// Recreating it would orphan known peripherals and pending connections, so this only
+    /// (re)starts scanning when Bluetooth is available.
     public func promptForBluetoothPermission() {
-        centralManager = CBCentralManager(delegate: self, queue: .main, options: [
-            CBCentralManagerOptionShowPowerAlertKey: true
-        ])
-        startScanning()
+        if centralManager.state == .poweredOn {
+            startScanning()
+            reacquireBoundPeripheral()
+        } else {
+            appendLog(
+                kind: .permission,
+                title: "Bluetooth Not Ready",
+                detail: "\(bluetoothStateDescription). Allow AuraSense under System Settings → Privacy & Security → Bluetooth."
+            )
+        }
+    }
+
+    private func observeSystemNotifications() {
+        let center = NotificationCenter.default
+        notificationObservers.append(center.addObserver(
+            forName: KeychainManager.passwordDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.resetAutoUnlockFailures(reason: "Stored password changed")
+            }
+        })
+        notificationObservers.append(center.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.syncLaunchAtLoginStatus()
+            }
+        })
     }
 
     // MARK: - 10-Second Desk Signal Calibration Optimizer
@@ -139,14 +276,21 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
     /// optimizes Unlock RSSI, Lock RSSI, Kalman/EMA smoothing, and Grace Period.
     public func startTenSecondDeskCalibration() {
         guard !isCalibratingDeskSignal else { return }
+        // Simulated RSSI must never overwrite the real, persisted thresholds.
+        guard !isSimulationMode else {
+            deskCalibrationSummary = "Turn off Sim Mode first: calibration needs real readings from your device."
+            return
+        }
 
-        // If no device is bound yet, auto-bind the strongest discovered device or enable simulated key
-        if selectedDeviceID.isEmpty {
-            if let strongest = discoveredDevices.first {
-                bindDevice(strongest)
-            } else {
-                isSimulationMode = true
-            }
+        // Calibration never binds anything: the trusted device must be chosen explicitly.
+        guard !selectedDeviceID.isEmpty else {
+            deskCalibrationSummary = "Bind your device first: choose your iPhone or Apple Watch in Devices, then run the desk calibration."
+            appendLog(
+                kind: .diagnostics,
+                title: "Desk Calibration Needs a Bound Device",
+                detail: "No trusted device is bound. Bind your device in Devices before calibrating."
+            )
+            return
         }
 
         startScanning()
@@ -158,11 +302,6 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
         deskCalibrationRemainingSeconds = 10
         isCalibratingDeskSignal = true
         deskCalibrationSummary = "Scanning desk signal strength (10s)… Keep your device resting in its normal desk spot."
-
-        if let dev = trackedDevice {
-            deskCalibrationBuffer.append(Double(dev.rawRSSI))
-            deskCalibrationSamplesCollected = 1
-        }
 
         appendLog(
             kind: .diagnostics,
@@ -195,12 +334,10 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
         // Actively poll connected peripheral RSSI on every 0.25s tick
         pollConnectedSystemPeripherals()
 
+        // Real samples are collected only in handleRSSIUpdate (fresh readings from the bound device).
         if isSimulationMode {
             let jitter = Double.random(in: -1.8...1.8)
             deskCalibrationBuffer.append(simulatedRSSI + jitter)
-            deskCalibrationSamplesCollected = deskCalibrationBuffer.count
-        } else if let dev = trackedDevice {
-            deskCalibrationBuffer.append(Double(dev.rawRSSI))
             deskCalibrationSamplesCollected = deskCalibrationBuffer.count
         }
 
@@ -216,7 +353,19 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
         deskCalibrationProgress = 1.0
         deskCalibrationRemainingSeconds = 0
 
-        let samples = deskCalibrationBuffer.isEmpty ? [-58.0] : deskCalibrationBuffer
+        let samples = deskCalibrationBuffer
+        guard samples.count >= Self.minimumCalibrationSamples else {
+            let name = selectedDeviceName.isEmpty ? "your bound device" : selectedDeviceName
+            deskCalibrationSummary = "Calibration failed: no signal from \(name) (\(samples.count) samples). Settings were not changed."
+            appendLog(
+                kind: .diagnostics,
+                title: "Desk Calibration Failed",
+                detail: "Only \(samples.count) readings from \(name) in 10s (need \(Self.minimumCalibrationSamples)). Make sure Bluetooth is on and the device is nearby, then retry."
+            )
+            evaluateProximityState()
+            return
+        }
+
         let sorted = samples.sorted()
         let count = Double(samples.count)
         let mean = samples.reduce(0.0, +) / count
@@ -305,12 +454,78 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
         isScanning = false
     }
 
-    public func bindDevice(_ device: BLEDevice) {
+    /// Binds `device` as the trusted key. Replacing an already-bound device requires the
+    /// user's Mac password (typed by hand: AuraSense's own autofill is disabled for that prompt).
+    public func bindDevice(_ device: BLEDevice, completion: ((Bool) -> Void)? = nil) {
+        if let simID = simulatedDeviceID, device.id == simID {
+            appendLog(
+                kind: .permission,
+                title: "Simulated Device Cannot Be Bound",
+                detail: "The Sim Mode preview device is not a real key. Bind your iPhone or Apple Watch instead."
+            )
+            completion?(false)
+            return
+        }
+        guard device.id.uuidString != selectedDeviceID else {
+            completion?(true)
+            return
+        }
+        guard trustedRecord != nil || !selectedDeviceID.isEmpty else {
+            commitBind(device)
+            completion?(true)
+            return
+        }
+        let currentName = selectedDeviceName.isEmpty ? "the current device" : selectedDeviceName
+        MacPasswordAuthorizer.shared.authorize(.changeTrustedDevice(from: currentName, to: device.name)) { [weak self] granted in
+            guard let self else { return }
+            if granted {
+                self.commitBind(device)
+            } else {
+                self.appendLog(
+                    kind: .permission,
+                    title: "Trusted Device Change Cancelled",
+                    detail: "Mac password was not verified; \(currentName) remains the trusted device."
+                )
+            }
+            completion?(granted)
+        }
+    }
+
+    private func commitBind(_ device: BLEDevice) {
+        let previousUUID = boundUUID
+
+        isApplyingBinding = true
+        isSimulationMode = false
+        if let old = previousUUID, old != device.id {
+            releasePeripheral(old)
+        }
+        if deviceStore[device.id] == nil {
+            deviceStore[device.id] = device
+        }
         selectedDeviceID = device.id.uuidString
         selectedDeviceName = device.name
         selectedDeviceCategoryRaw = device.category.rawValue
-        trackedDevice = device
+        let record = TrustedDeviceRecord(id: device.id.uuidString, name: device.name, category: device.category.rawValue)
+        trustedRecord = record
+        if !TrustedDeviceRecordStore.save(record) {
+            appendLog(
+                kind: .permission,
+                title: "Trusted Device Record Not Saved",
+                detail: "AuraSense couldn't write the tamper-resistant Keychain record; the binding still applies for this session."
+            )
+        }
+        isApplyingBinding = false
+
+        boundSignalLost = false
+        autoUnlockArmed = true
+        autoLockArmed = true
+        lastAutoLockDate = .distantPast
+        resetAutoUnlockFailures(reason: "Bound \(device.name)")
         cancelGracePeriod(reason: "Bound \(device.name)")
+        refreshTrackedDevice()
+        deviceListDirty = true
+        publishDiscoveredDevices(force: true)
+
         appendLog(
             kind: .deviceBound,
             title: "Bound \(device.name) as Aura Key",
@@ -318,18 +533,56 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
             rssi: device.rawRSSI
         )
         evaluateProximityState()
+        reacquireBoundPeripheral()
+    }
 
-        if let peripheral = peripheralMap[device.id], peripheral.state == .disconnected {
-            centralManager.connect(peripheral, options: nil)
+    /// Removes the trusted device after the user's Mac password is verified.
+    public func unbindDevice(completion: ((Bool) -> Void)? = nil) {
+        guard !selectedDeviceID.isEmpty else {
+            completion?(true)
+            return
+        }
+        let name = selectedDeviceName.isEmpty ? "the current device" : selectedDeviceName
+        MacPasswordAuthorizer.shared.authorize(.unbindTrustedDevice(name: name)) { [weak self] granted in
+            guard let self else { return }
+            if granted {
+                self.commitUnbind()
+            } else {
+                self.appendLog(
+                    kind: .permission,
+                    title: "Trusted Device Removal Cancelled",
+                    detail: "Mac password was not verified; \(name) remains the trusted device."
+                )
+            }
+            completion?(granted)
         }
     }
 
-    public func unbindDevice() {
+    private func commitUnbind() {
         let previousName = selectedDeviceName
+        let previousUUID = boundUUID
+
+        isApplyingBinding = true
+        isSimulationMode = false
+        cancelGracePeriod(reason: nil)
         selectedDeviceID = ""
         selectedDeviceName = ""
-        trackedDevice = nil
-        cancelGracePeriod(reason: nil)
+        trustedRecord = nil
+        TrustedDeviceRecordStore.clear()
+        isApplyingBinding = false
+
+        if let old = previousUUID {
+            releasePeripheral(old)
+        }
+        boundSignalLost = false
+        autoUnlockArmed = true
+        autoLockArmed = true
+        consecutiveUnlockFailures = 0
+        autoUnlockSuspended = false
+        nextUnlockAllowedDate = .distantPast
+        refreshTrackedDevice()
+        deviceListDirty = true
+        publishDiscoveredDevices(force: true)
         proximityState = .unconfigured
         if !previousName.isEmpty {
             appendLog(
@@ -376,20 +629,59 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
         )
     }
 
+    /// Registers/unregisters AuraSense as a login item. `launchAtLogin` always reflects the
+    /// real `SMAppService.mainApp.status` afterwards, and failures are reported in the log.
     public func setLaunchAtLogin(_ enabled: Bool) {
-        launchAtLogin = enabled
+        let service = SMAppService.mainApp
         do {
             if enabled {
-                try SMAppService.mainApp.register()
+                try service.register()
             } else {
-                try SMAppService.mainApp.unregister()
+                try service.unregister()
+            }
+            syncLaunchAtLoginStatus()
+            if enabled && service.status == .requiresApproval {
+                SMAppService.openSystemSettingsLoginItems()
+                appendLog(
+                    kind: .permission,
+                    title: "Launch at Login Needs Approval",
+                    detail: "Allow AuraSense in System Settings → General → Login Items."
+                )
+            } else {
+                appendLog(
+                    kind: .systemState,
+                    title: launchAtLogin ? "Launch at Login Enabled" : "Launch at Login Disabled",
+                    detail: "Login item status: \(Self.describe(service.status))."
+                )
             }
         } catch {
+            syncLaunchAtLoginStatus()
+            if enabled && service.status == .requiresApproval {
+                SMAppService.openSystemSettingsLoginItems()
+            }
             appendLog(
-                kind: .systemState,
-                title: "Launch at Login Preference Saved",
-                detail: "Service registration status updated (\(enabled ? "Enabled" : "Disabled"))."
+                kind: .permission,
+                title: enabled ? "Could Not Enable Launch at Login" : "Could Not Disable Launch at Login",
+                detail: "\(error.localizedDescription) • Login item status: \(Self.describe(service.status))."
             )
+        }
+    }
+
+    /// Re-reads the login item status (it can change in System Settings or via BackgroundPersistenceManager).
+    public func syncLaunchAtLoginStatus() {
+        let enabled = (SMAppService.mainApp.status == .enabled)
+        if launchAtLogin != enabled {
+            launchAtLogin = enabled
+        }
+    }
+
+    private static func describe(_ status: SMAppService.Status) -> String {
+        switch status {
+        case .enabled: return "Enabled"
+        case .notRegistered: return "Not Registered"
+        case .requiresApproval: return "Requires Approval"
+        case .notFound: return "Not Found (install AuraSense in /Applications)"
+        @unknown default: return "Unknown"
         }
     }
 
@@ -402,12 +694,17 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
         )
         switch result {
         case .lockedViaPrivateFramework, .lockedViaKeyboardShortcut:
-            proximityState = .lockedOutOfRange(lastRSSI: trackedDevice?.rawRSSI)
+            // Do not undo a deliberate lock while the device is still nearby: auto-unlock
+            // re-arms only after the bound device has left the Aura.
+            autoUnlockArmed = false
+            lastManualLockDate = Date()
+            cancelGracePeriod(reason: nil)
+            proximityState = .lockedOutOfRange(lastRSSI: boundSignalLost ? nil : boundRecord?.rawRSSI)
             appendLog(
                 kind: .locked,
                 title: "Manual Lock Triggered",
-                detail: MacLockUnlockController.shared.lastActionSummary,
-                rssi: trackedDevice?.rawRSSI
+                detail: MacLockUnlockController.shared.lastActionSummary + " Auto-unlock resumes after your device leaves and returns.",
+                rssi: boundRecord?.rawRSSI
             )
         case .alreadyLocked:
             appendLog(kind: .diagnostics, title: "Mac Already Locked", detail: "Session was already in locked state.")
@@ -432,9 +729,8 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
                 )
             case .alreadyUnlocked:
                 MacLockUnlockController.shared.wakeDisplayAndSendMonitorInput()
-                if playSoundEffects {
-                    NSSound(named: NSSound.Name("Glass"))?.play()
-                }
+                // Preview what a real unlock looks and sounds like.
+                UnlockCelebrationCoordinator.shared.celebrate(deviceName: trackedDevice?.name ?? selectedDeviceName)
                 appendLog(
                     kind: .diagnostics,
                     title: "Unlock & Monitor Wake Pipeline Verified",
@@ -453,6 +749,8 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
                     title: "Keychain Password Required",
                     detail: "Save your macOS login password in Security & Keychain settings to enable auto-unlock."
                 )
+            case .skipped(let reason):
+                appendLog(kind: .diagnostics, title: "Unlock Sequence Skipped", detail: reason)
             case .failed(let reason):
                 appendLog(kind: .diagnostics, title: "Unlock Sequence Error", detail: reason)
             }
@@ -464,52 +762,172 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
         appendLog(kind: .diagnostics, title: "Activity Log Cleared", detail: "Started fresh telemetry session.")
     }
 
-    // MARK: - Simulation Mode
+    // MARK: - Simulation Mode (in-memory preview only)
 
     private func setupSimulatedDeviceIfNeeded() {
-        let simUUID: UUID
-        if let existingUUID = UUID(uuidString: selectedDeviceID) {
-            simUUID = existingUUID
-        } else {
-            let newUUID = UUID()
-            selectedDeviceID = newUUID.uuidString
-            selectedDeviceName = "iPhone 16 Pro (Aura Sim)"
-            selectedDeviceCategoryRaw = DeviceCategory.iPhone.rawValue
-            simUUID = newUUID
-        }
+        let simUUID = simulatedDeviceID ?? UUID()
+        simulatedDeviceID = simUUID
+        guard simulatedDevice == nil else { return }
+        let simRSSI = Int(simulatedRSSI)
+        kalmanFilters[simUUID] = KalmanRSSIFilter(initialEstimate: simulatedRSSI)
+        simulatedDevice = BLEDevice(
+            id: simUUID,
+            name: "iPhone (Aura Sim Preview)",
+            hasAdvertisedName: true,
+            category: .iPhone,
+            rawRSSI: simRSSI,
+            smoothedRSSI: simulatedRSSI,
+            txPower: -59,
+            isConnected: true,
+            manufacturerSummary: "Simulated",
+            lastSeen: Date(),
+            rssiHistory: [RSSISample(rawRSSI: simRSSI, smoothedRSSI: simulatedRSSI)]
+        )
+        refreshTrackedDevice()
+    }
 
-        if trackedDevice == nil {
-            let dev = BLEDevice(
-                id: simUUID,
-                name: selectedDeviceName.isEmpty ? "iPhone 16 Pro (Aura Sim)" : selectedDeviceName,
-                hasAdvertisedName: true,
-                category: .iPhone,
-                rawRSSI: Int(simulatedRSSI),
-                smoothedRSSI: simulatedRSSI,
-                txPower: -59,
-                isConnected: true,
-                manufacturerSummary: "Apple Inc. (Simulated)",
-                lastSeen: Date(),
-                rssiHistory: [RSSISample(rawRSSI: Int(simulatedRSSI), smoothedRSSI: simulatedRSSI)]
-            )
-            trackedDevice = dev
-            if !discoveredDevices.contains(where: { $0.id == simUUID }) {
-                discoveredDevices.insert(dev, at: 0)
-            }
+    private func teardownSimulatedDevice() {
+        if let simID = simulatedDeviceID {
+            kalmanFilters[simID] = nil
         }
+        simulatedDevice = nil
+        simulatedDeviceID = nil
+        refreshTrackedDevice()
     }
 
     private func applySimulatedRSSI(_ rawValue: Int) {
-        guard let targetUUID = UUID(uuidString: selectedDeviceID) else { return }
-        handleRSSIUpdate(
-            uuid: targetUUID,
-            name: selectedDeviceName.isEmpty ? "iPhone 16 Pro (Aura Sim)" : selectedDeviceName,
-            hasAdvertisedName: true,
-            rawRSSI: rawValue,
-            txPower: -59,
-            isConnected: true,
-            manufacturerSummary: "Apple Inc."
-        )
+        guard let simID = simulatedDeviceID, var dev = simulatedDevice else { return }
+        var filter = kalmanFilters[simID] ?? KalmanRSSIFilter(initialEstimate: Double(rawValue))
+        let smoothed = filter.update(measurement: Double(rawValue), alphaOverride: smoothingFactor)
+        kalmanFilters[simID] = filter
+        dev.rawRSSI = rawValue
+        dev.smoothedRSSI = smoothed
+        dev.lastSeen = Date()
+        dev.rssiHistory.append(RSSISample(rawRSSI: rawValue, smoothedRSSI: smoothed))
+        if dev.rssiHistory.count > 45 {
+            dev.rssiHistory.removeFirst(dev.rssiHistory.count - 45)
+        }
+        simulatedDevice = dev
+        refreshTrackedDevice()
+    }
+
+    // MARK: - Bound Device Helpers
+
+    private var boundUUID: UUID? {
+        UUID(uuidString: selectedDeviceID)
+    }
+
+    /// The real bound device's latest record (never the simulated device).
+    private var boundRecord: BLEDevice? {
+        guard let uuid = boundUUID else { return nil }
+        return deviceStore[uuid]
+    }
+
+    private func isFresh(_ device: BLEDevice) -> Bool {
+        Date().timeIntervalSince(device.lastSeen) < signalLossTimeoutSeconds
+    }
+
+    private func refreshTrackedDevice() {
+        if isSimulationMode, let sim = simulatedDevice {
+            trackedDevice = sim
+        } else {
+            trackedDevice = boundRecord
+        }
+    }
+
+    /// Drops AuraSense's own connection to a device that is no longer trusted.
+    private func releasePeripheral(_ uuid: UUID) {
+        if let peripheral = peripheralMap[uuid],
+           centralManager.state == .poweredOn,
+           peripheral.state != .disconnected {
+            centralManager.cancelPeripheralConnection(peripheral)
+        }
+        kalmanFilters[uuid] = nil
+    }
+
+    /// Re-acquires the bound peripheral by identifier (it may not advertise under a name after launch)
+    /// and keeps a pending connection so RSSI can be read as soon as it is reachable.
+    private func reacquireBoundPeripheral() {
+        guard centralManager.state == .poweredOn, let uuid = boundUUID else { return }
+        let peripheral = peripheralMap[uuid] ?? centralManager.retrievePeripherals(withIdentifiers: [uuid]).first
+        guard let peripheral else { return }
+        peripheralMap[uuid] = peripheral
+        peripheral.delegate = self
+        if peripheral.state == .disconnected {
+            centralManager.connect(peripheral, options: nil)
+        }
+    }
+
+    private func resetAutoUnlockFailures(reason: String) {
+        let wasSuspended = autoUnlockSuspended
+        consecutiveUnlockFailures = 0
+        autoUnlockSuspended = false
+        nextUnlockAllowedDate = .distantPast
+        if wasSuspended {
+            appendLog(
+                kind: .systemState,
+                title: "Auto-Unlock Re-enabled",
+                detail: "\(reason). AuraSense will try unlocking again when your device is in range."
+            )
+            evaluateProximityState()
+        }
+    }
+
+    // MARK: - Device List Maintenance
+
+    private func publishDiscoveredDevices(force: Bool) {
+        guard deviceListDirty else { return }
+        let now = Date()
+        guard force || now.timeIntervalSince(lastDeviceListPublish) >= Self.deviceListPublishInterval else { return }
+        lastDeviceListPublish = now
+        deviceListDirty = false
+        let bound = boundUUID
+        discoveredDevices = deviceStore.values.sorted { a, b in
+            if a.id == bound { return true }
+            if b.id == bound { return false }
+            if a.hasAdvertisedName != b.hasAdvertisedName { return a.hasAdvertisedName }
+            if a.smoothedRSSI != b.smoothedRSSI { return a.smoothedRSSI > b.smoothedRSSI }
+            return a.id.uuidString < b.id.uuidString
+        }
+    }
+
+    /// Removes devices not heard for a while (BLE addresses rotate) and caps the list size.
+    /// The bound device is always kept.
+    private func pruneStaleDevices() {
+        let now = Date()
+        let bound = boundUUID
+        var removed: [UUID] = []
+
+        for (id, dev) in deviceStore where id != bound && now.timeIntervalSince(dev.lastSeen) > Self.staleDeviceAgeSeconds {
+            removed.append(id)
+        }
+        for id in removed { deviceStore[id] = nil }
+
+        if deviceStore.count > Self.maxDiscoveredDevices {
+            let overflow = deviceStore.count - Self.maxDiscoveredDevices
+            let oldest = deviceStore.values
+                .filter { $0.id != bound }
+                .sorted { $0.lastSeen < $1.lastSeen }
+                .prefix(overflow)
+                .map(\.id)
+            for id in oldest { deviceStore[id] = nil }
+            removed.append(contentsOf: oldest)
+        }
+
+        for id in removed {
+            peripheralMap[id] = nil
+            kalmanFilters[id] = nil
+        }
+        for id in Array(peripheralMap.keys) where id != bound && deviceStore[id] == nil {
+            peripheralMap[id] = nil
+        }
+        for id in Array(kalmanFilters.keys) where id != bound && id != simulatedDeviceID && deviceStore[id] == nil {
+            kalmanFilters[id] = nil
+        }
+
+        if !removed.isEmpty {
+            deviceListDirty = true
+        }
     }
 
     // MARK: - Timers & Connected Peripheral Polling
@@ -518,6 +936,7 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
         connectedPollTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.pollConnectedSystemPeripherals()
+                self?.publishDiscoveredDevices(force: false)
             }
         }
 
@@ -531,7 +950,7 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
     private func pollConnectedSystemPeripherals() {
         guard centralManager.state == .poweredOn else { return }
 
-        if let uuid = UUID(uuidString: selectedDeviceID),
+        if let uuid = boundUUID,
            let peripheral = peripheralMap[uuid] {
             if peripheral.state == .connected {
                 peripheral.readRSSI()
@@ -546,36 +965,70 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
             CBUUID(string: "FE9F")
         ]
         let connected = centralManager.retrieveConnectedPeripherals(withServices: serviceUUIDs)
+        let bound = boundUUID
         for peripheral in connected {
             peripheralMap[peripheral.identifier] = peripheral
             peripheral.delegate = self
             if peripheral.state == .connected {
                 peripheral.readRSSI()
-            } else if peripheral.identifier.uuidString == selectedDeviceID {
+            } else if peripheral.identifier == bound {
                 centralManager.connect(peripheral, options: nil)
             }
         }
     }
 
     private func checkWatchdogAndPauseExpiry() {
+        pruneStaleDevices()
+        publishDiscoveredDevices(force: false)
+
         if let pauseUntil = pauseUntilDate, Date() >= pauseUntil {
             pauseUntilDate = nil
             appendLog(kind: .systemState, title: "Scheduled Pause Ended", detail: "Proximity monitoring is active again.")
+            evaluateProximityState()
         }
 
-        guard monitoringEnabled, pauseUntilDate == nil, !isSimulationMode, !isCalibratingDeskSignal else { return }
-        guard !selectedDeviceID.isEmpty else {
-            proximityState = .unconfigured
+        guard let uuid = boundUUID else {
+            if monitoringEnabled && pauseUntilDate == nil {
+                proximityState = .unconfigured
+            }
             return
         }
 
-        if let dev = trackedDevice {
-            let elapsed = Date().timeIntervalSince(dev.lastSeen)
-            if elapsed > signalLossTimeoutSeconds {
-                if graceCountdownTimer == nil && !MacLockUnlockController.shared.isScreenLocked {
-                    startGracePeriod(triggerRSSI: Int(lockThresholdRSSI - 8), reason: "Signal lost for \(Int(elapsed))s")
-                }
+        // Signal loss uses the last real reading, or the engine start if the device has not been seen since launch.
+        let lastSeen = deviceStore[uuid]?.lastSeen ?? engineStartDate
+        let elapsed = Date().timeIntervalSince(lastSeen)
+        guard elapsed > signalLossTimeoutSeconds else { return }
+
+        if !boundSignalLost {
+            boundSignalLost = true
+            // The device has left: a manual lock no longer blocks auto-unlock on its return.
+            autoUnlockArmed = true
+            let floor = lockThresholdRSSI - 10
+            if var record = deviceStore[uuid] {
+                record.smoothedRSSI = floor
+                deviceStore[uuid] = record
+                kalmanFilters[uuid]?.reset(to: floor)
+                deviceListDirty = true
+                refreshTrackedDevice()
             }
+            let name = selectedDeviceName.isEmpty ? "the bound device" : selectedDeviceName
+            appendLog(
+                kind: .systemState,
+                title: "Bound Device Signal Lost",
+                detail: deviceStore[uuid] == nil
+                    ? "\(name) has not been detected for \(Int(elapsed))s since AuraSense started."
+                    : "No signal from \(name) for \(Int(elapsed))s."
+            )
+        }
+
+        guard monitoringEnabled, pauseUntilDate == nil, !isCalibratingDeskSignal else { return }
+        guard graceCountdownTimer == nil else { return }
+
+        let isLocked = MacLockUnlockController.shared.refreshScreenLockState()
+        if autoLockEnabled && autoLockArmed && !isLocked {
+            startGracePeriod(triggerRSSI: Int(lockThresholdRSSI - 8), reason: "Signal lost for \(Int(elapsed))s")
+        } else {
+            evaluateProximityState()
         }
     }
 
@@ -591,8 +1044,9 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
         manufacturerSummary: String?
     ) {
         guard rawRSSI < 0 && rawRSSI > -115 else { return }
+        let isBound = (uuid == boundUUID)
 
-        if isCalibratingDeskSignal && uuid.uuidString == selectedDeviceID {
+        if isCalibratingDeskSignal && isBound && !isSimulationMode {
             deskCalibrationBuffer.append(Double(rawRSSI))
             deskCalibrationSamplesCollected = deskCalibrationBuffer.count
         }
@@ -601,11 +1055,13 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
         let smoothed = filter.update(measurement: Double(rawRSSI), alphaOverride: smoothingFactor)
         kalmanFilters[uuid] = filter
 
-        let sample = RSSISample(timestamp: Date(), rawRSSI: rawRSSI, smoothedRSSI: smoothed)
+        let now = Date()
+        let sample = RSSISample(timestamp: now, rawRSSI: rawRSSI, smoothedRSSI: smoothed)
         let category = DeviceCategory.infer(from: name, manufacturerSummary: manufacturerSummary)
+        let isNew: Bool
 
-        if let index = discoveredDevices.firstIndex(where: { $0.id == uuid }) {
-            var existing = discoveredDevices[index]
+        if var existing = deviceStore[uuid] {
+            isNew = false
             if hasAdvertisedName || existing.name.hasPrefix("BLE Device") {
                 existing.name = name
                 existing.hasAdvertisedName = existing.hasAdvertisedName || hasAdvertisedName
@@ -616,18 +1072,15 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
             if let txPower = txPower { existing.txPower = txPower }
             existing.isConnected = isConnected
             if let mfg = manufacturerSummary { existing.manufacturerSummary = mfg }
-            existing.lastSeen = Date()
+            existing.lastSeen = now
             existing.rssiHistory.append(sample)
             if existing.rssiHistory.count > 45 {
                 existing.rssiHistory.removeFirst(existing.rssiHistory.count - 45)
             }
-            discoveredDevices[index] = existing
-
-            if uuid.uuidString == selectedDeviceID {
-                trackedDevice = existing
-            }
+            deviceStore[uuid] = existing
         } else {
-            let newDevice = BLEDevice(
+            isNew = true
+            deviceStore[uuid] = BLEDevice(
                 id: uuid,
                 name: name,
                 hasAdvertisedName: hasAdvertisedName,
@@ -637,28 +1090,28 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
                 txPower: txPower,
                 isConnected: isConnected,
                 manufacturerSummary: manufacturerSummary,
-                lastSeen: Date(),
+                lastSeen: now,
                 rssiHistory: [sample]
             )
-            discoveredDevices.append(newDevice)
-            if uuid.uuidString == selectedDeviceID {
-                trackedDevice = newDevice
-            }
         }
+        deviceListDirty = true
 
-        discoveredDevices.sort { a, b in
-            if a.id.uuidString == selectedDeviceID { return true }
-            if b.id.uuidString == selectedDeviceID { return false }
-            if a.hasAdvertisedName != b.hasAdvertisedName { return a.hasAdvertisedName }
-            return a.smoothedRSSI > b.smoothedRSSI
+        if isNew && deviceStore.count > Self.maxDiscoveredDevices {
+            pruneStaleDevices()
         }
+        publishDiscoveredDevices(force: isNew && discoveredDevices.isEmpty)
 
-        if uuid.uuidString == selectedDeviceID {
+        if isBound {
+            boundSignalLost = false
+            refreshTrackedDevice()
             evaluateProximityState()
         }
     }
 
     public func evaluateProximityState() {
+        guard !isApplyingBinding else { return }
+        enforceTrustedBinding()
+
         if let pauseUntil = pauseUntilDate, Date() < pauseUntil {
             let formatter = DateFormatter()
             formatter.timeStyle = .short
@@ -678,56 +1131,64 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
             return
         }
 
-        guard let device = trackedDevice else {
+        let deviceName = selectedDeviceName.isEmpty ? "your device" : selectedDeviceName
+
+        guard let device = boundRecord else {
+            // Not seen since launch: never claim it is in range. The watchdog starts the
+            // signal-loss grace period after `signalLossTimeoutSeconds`.
+            if graceCountdownTimer != nil { return }
             if MacLockUnlockController.shared.isScreenLocked {
                 proximityState = .lockedOutOfRange(lastRSSI: nil)
             } else {
-                proximityState = .unlockedInRange(rssi: Int(unlockThresholdRSSI))
+                proximityState = .paused(reason: "Searching for \(deviceName)…")
             }
             return
         }
 
+        let fresh = isFresh(device) && !boundSignalLost
         let currentSmoothed = device.smoothedRSSI
         let currentInt = Int(currentSmoothed.rounded())
         let isMacLocked = MacLockUnlockController.shared.refreshScreenLockState()
+        if fresh && !isMacLocked && currentSmoothed > lockThresholdRSSI {
+            // Present (even in the hysteresis deadband) with the Mac unlocked: re-arm so the next
+            // departure auto-locks again. Otherwise a return with the phone in a pocket (deadband)
+            // followed by a manual unlock would leave auto-lock disarmed.
+            autoLockArmed = true
+        }
+        if !isMacLocked && !autoUnlockArmed && Date().timeIntervalSince(lastManualLockDate) > 5 {
+            // The user unlocked by hand after a manual lock; later (e.g. idle) locks may auto-unlock again.
+            autoUnlockArmed = true
+        }
 
         // Case 1: Signal is at or stronger than Unlock Threshold -> User is inside Aura
         if currentSmoothed >= unlockThresholdRSSI {
             if graceCountdownTimer != nil {
                 cancelGracePeriod(reason: "Signal recovered to \(currentInt) dBm")
             }
+            if fresh {
+                // The user is back: the next departure may auto-lock again.
+                autoLockArmed = true
+            }
 
-            proximityState = .unlockedInRange(rssi: currentInt)
+            guard isMacLocked else {
+                proximityState = .unlockedInRange(rssi: currentInt)
+                return
+            }
 
-            if isMacLocked && autoUnlockEnabled {
-                let sinceLastUnlock = Date().timeIntervalSince(lastUnlockTriggerDate)
-                if sinceLastUnlock >= unlockCooldownSeconds {
-                    lastUnlockTriggerDate = Date()
-                    if wakeDisplayOnApproach {
-                        MacLockUnlockController.shared.wakeDisplayAndSendMonitorInput()
-                    }
-                    appendLog(
-                        kind: .unlocked,
-                        title: "Aura Entry Detected (\(currentInt) dBm)",
-                        detail: "Device '\(device.name)' crossed unlock threshold (\(Int(unlockThresholdRSSI)) dBm). Waking monitor & unlocking Mac...",
-                        rssi: currentInt
-                    )
-                    Task { @MainActor in
-                        let res = await MacLockUnlockController.shared.unlockMac(playChime: playSoundEffects)
-                        if case .missingAccessibilityPermission = res {
-                            appendLog(
-                                kind: .permission,
-                                title: "Auto-Unlock Blocked: Accessibility Needed",
-                                detail: "Enable AuraSense in System Settings → Privacy & Security → Accessibility."
-                            )
-                        } else if case .missingKeychainPassword = res {
-                            appendLog(
-                                kind: .permission,
-                                title: "Auto-Unlock Blocked: Keychain Empty",
-                                detail: "Store your login password in AuraSense Security settings."
-                            )
-                        }
-                    }
+            if !autoUnlockEnabled {
+                proximityState = .paused(reason: "Auto-unlock is off")
+            } else if autoUnlockSuspended {
+                proximityState = .paused(reason: "Auto-unlock stopped: stored password was rejected")
+            } else if !autoUnlockArmed {
+                proximityState = .paused(reason: "Locked manually – auto-unlock resumes after \(deviceName) leaves")
+            } else {
+                proximityState = .unlockedInRange(rssi: currentInt)
+                let now = Date()
+                if fresh,
+                   !unlockAttemptInFlight,
+                   now >= nextUnlockAllowedDate,
+                   now.timeIntervalSince(lastUnlockTriggerDate) >= unlockCooldownSeconds {
+                    attemptAutoUnlock(deviceName: device.name, rssi: currentInt)
                 }
             }
             return
@@ -735,21 +1196,30 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
 
         // Case 2: Signal dropped at or below Lock Threshold -> User stepped outside Aura
         if currentSmoothed <= lockThresholdRSSI {
-            if isMacLocked {
+            // The device has left: a manual lock no longer blocks auto-unlock on its return.
+            autoUnlockArmed = true
+            let shownRSSI: Int? = boundSignalLost ? nil : currentInt
+            let justAutoLocked = Date().timeIntervalSince(lastAutoLockDate) < 5
+
+            if isMacLocked || justAutoLocked {
                 cancelGracePeriod(reason: nil)
-                proximityState = .lockedOutOfRange(lastRSSI: currentInt)
+                proximityState = .lockedOutOfRange(lastRSSI: shownRSSI)
+            } else if graceCountdownTimer != nil {
+                proximityState = .gracePeriodCountdown(
+                    remainingSeconds: graceRemainingSeconds,
+                    currentRSSI: currentInt
+                )
+            } else if autoLockEnabled && autoLockArmed {
+                startGracePeriod(
+                    triggerRSSI: currentInt,
+                    reason: boundSignalLost
+                        ? "Signal lost from \(deviceName)"
+                        : "Signal dropped to \(currentInt) dBm (≤ \(Int(lockThresholdRSSI)) dBm)"
+                )
             } else if autoLockEnabled {
-                if graceCountdownTimer == nil {
-                    startGracePeriod(
-                        triggerRSSI: currentInt,
-                        reason: "Signal dropped to \(currentInt) dBm (≤ \(Int(lockThresholdRSSI)) dBm)"
-                    )
-                } else {
-                    proximityState = .gracePeriodCountdown(
-                        remainingSeconds: graceRemainingSeconds,
-                        currentRSSI: currentInt
-                    )
-                }
+                proximityState = .paused(reason: "Auto-lock resumes when \(deviceName) returns")
+            } else {
+                proximityState = .paused(reason: "Auto-lock is off")
             }
             return
         }
@@ -764,6 +1234,88 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
             proximityState = .lockedOutOfRange(lastRSSI: currentInt)
         } else {
             proximityState = .unlockedInRange(rssi: currentInt)
+        }
+    }
+
+    // MARK: - Auto-Unlock Attempts
+
+    private func attemptAutoUnlock(deviceName: String, rssi: Int) {
+        unlockAttemptInFlight = true
+        lastUnlockTriggerDate = Date()
+        if wakeDisplayOnApproach {
+            MacLockUnlockController.shared.wakeDisplayAndSendMonitorInput()
+        }
+        appendLog(
+            kind: .unlocked,
+            title: "Aura Entry Detected (\(rssi) dBm)",
+            detail: "Device '\(deviceName)' crossed unlock threshold (\(Int(unlockThresholdRSSI)) dBm). Waking monitor & unlocking Mac...",
+            rssi: rssi
+        )
+        Task { @MainActor in
+            let result = await MacLockUnlockController.shared.unlockMac(playChime: self.playSoundEffects)
+            self.unlockAttemptInFlight = false
+            self.handleAutoUnlockResult(result)
+        }
+    }
+
+    private func handleAutoUnlockResult(_ result: MacLockUnlockController.UnlockResult) {
+        switch result {
+        case .unlockedSuccessfully, .alreadyUnlocked:
+            consecutiveUnlockFailures = 0
+            nextUnlockAllowedDate = .distantPast
+        case .missingAccessibilityPermission:
+            nextUnlockAllowedDate = Date().addingTimeInterval(30)
+            appendLog(
+                kind: .permission,
+                title: "Auto-Unlock Blocked: Accessibility Needed",
+                detail: "Enable AuraSense in System Settings → Privacy & Security → Accessibility."
+            )
+        case .missingKeychainPassword:
+            nextUnlockAllowedDate = Date().addingTimeInterval(30)
+            appendLog(
+                kind: .permission,
+                title: "Auto-Unlock Blocked: Keychain Empty",
+                detail: "Store your login password in AuraSense Security settings."
+            )
+        case .skipped(let reason):
+            // Nothing was typed; retry soon without counting it against the password.
+            nextUnlockAllowedDate = Date().addingTimeInterval(5)
+            appendLog(kind: .diagnostics, title: "Auto-Unlock Skipped", detail: reason)
+        case .failed(let reason):
+            // macOS can confirm a correct unlock late; re-check before blaming the password.
+            unlockAttemptInFlight = true
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                self.unlockAttemptInFlight = false
+                if MacLockUnlockController.shared.refreshScreenLockState() {
+                    self.recordRejectedPassword(reason: reason)
+                } else {
+                    self.consecutiveUnlockFailures = 0
+                    self.nextUnlockAllowedDate = .distantPast
+                }
+                self.evaluateProximityState()
+            }
+            return
+        }
+        evaluateProximityState()
+    }
+
+    private func recordRejectedPassword(reason: String) {
+        consecutiveUnlockFailures += 1
+        if consecutiveUnlockFailures >= Self.maxConsecutiveUnlockFailures {
+            autoUnlockSuspended = true
+            appendLog(
+                kind: .permission,
+                title: "Auto-Unlock Stopped: Stored Password Rejected",
+                detail: "\(reason). The Mac stayed locked after \(consecutiveUnlockFailures) attempts, so AuraSense will not type it again. Re-save your macOS login password in Security & Keychain settings (or re-bind your device) to resume."
+            )
+        } else {
+            nextUnlockAllowedDate = Date().addingTimeInterval(30)
+            appendLog(
+                kind: .permission,
+                title: "Auto-Unlock Failed (Attempt \(consecutiveUnlockFailures) of \(Self.maxConsecutiveUnlockFailures))",
+                detail: "\(reason). Retrying once in 30s."
+            )
         }
     }
 
@@ -794,14 +1346,21 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
     private func tickGracePeriod() {
         guard let currentTimer = graceCountdownTimer, currentTimer.isValid else { return }
 
-        if let dev = trackedDevice, dev.smoothedRSSI >= unlockThresholdRSSI {
+        guard autoLockEnabled, monitoringEnabled, pauseUntilDate == nil, boundUUID != nil else {
+            cancelGracePeriod(reason: autoLockEnabled ? nil : "Auto-lock disabled")
+            evaluateProximityState()
+            return
+        }
+
+        // Only a fresh, real reading counts as "returned"; a stale strong value must not cancel the lock.
+        if let dev = boundRecord, !boundSignalLost, isFresh(dev), dev.smoothedRSSI >= unlockThresholdRSSI {
             cancelGracePeriod(reason: "Returned within Aura (\(Int(dev.smoothedRSSI)) dBm)")
-            proximityState = .unlockedInRange(rssi: Int(dev.smoothedRSSI))
+            evaluateProximityState()
             return
         }
 
         graceRemainingSeconds -= 1
-        let latestRSSI = Int((trackedDevice?.smoothedRSSI ?? lockThresholdRSSI).rounded())
+        let latestRSSI = Int((boundRecord?.smoothedRSSI ?? lockThresholdRSSI).rounded())
 
         if graceRemainingSeconds > 0 {
             proximityState = .gracePeriodCountdown(
@@ -811,26 +1370,32 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
         } else {
             graceCountdownTimer?.invalidate()
             graceCountdownTimer = nil
-            lastLockTriggerDate = Date()
 
             let lockRes = MacLockUnlockController.shared.lockMac(
                 sleepDisplay: sleepDisplayOnLock,
                 playChime: playSoundEffects
             )
-            proximityState = .lockedOutOfRange(lastRSSI: latestRSSI)
+            let shownRSSI: Int? = (boundSignalLost || boundRecord == nil) ? nil : latestRSSI
 
             switch lockRes {
             case .lockedViaPrivateFramework, .lockedViaKeyboardShortcut:
+                // Lock once per departure: no further auto-lock until the device returns.
+                autoLockArmed = false
+                lastAutoLockDate = Date()
+                proximityState = .lockedOutOfRange(lastRSSI: shownRSSI)
                 appendLog(
                     kind: .locked,
                     title: "Auto-Locked Mac (Out of Aura)",
                     detail: "Device '\(selectedDeviceName)' stayed below \(Int(lockThresholdRSSI)) dBm for \(Int(lockGracePeriodSeconds))s.",
-                    rssi: latestRSSI
+                    rssi: shownRSSI
                 )
             case .alreadyLocked:
-                break
+                autoLockArmed = false
+                lastAutoLockDate = Date()
+                proximityState = .lockedOutOfRange(lastRSSI: shownRSSI)
             case .failed(let err):
-                appendLog(kind: .permission, title: "Auto-Lock Failed", detail: err, rssi: latestRSSI)
+                appendLog(kind: .permission, title: "Auto-Lock Failed", detail: err, rssi: shownRSSI)
+                evaluateProximityState()
             }
         }
     }
@@ -846,7 +1411,7 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
                 kind: .graceCancelled,
                 title: "Lock Countdown Cancelled",
                 detail: reason,
-                rssi: trackedDevice?.rawRSSI
+                rssi: boundRecord?.rawRSSI
             )
         }
     }
@@ -882,6 +1447,7 @@ extension BLEProximityEngine: CBCentralManagerDelegate, CBPeripheralDelegate {
             self.bluetoothState = state
             if state == .poweredOn {
                 self.startScanning()
+                self.reacquireBoundPeripheral()
             } else {
                 self.isScanning = false
             }
@@ -907,7 +1473,7 @@ extension BLEProximityEngine: CBCentralManagerDelegate, CBPeripheralDelegate {
                 mfgSummary = "Apple Inc."
                 let dataCopy = mfgData
                 Task { @MainActor in
-                    FaceIdKeychainBridgeService.shared.handleContinuityManufacturerData(dataCopy, rssi: rawRSSI)
+                    FaceIdKeychainBridgeService.shared.handleContinuityManufacturerData(dataCopy, rssi: rawRSSI, peripheralID: uuid)
                 }
             } else if companyID == 0x0075 {
                 mfgSummary = "Samsung"
@@ -953,6 +1519,15 @@ extension BLEProximityEngine: CBCentralManagerDelegate, CBPeripheralDelegate {
         Task { @MainActor in
             peripheral.delegate = self
             peripheral.readRSSI()
+        }
+    }
+
+    nonisolated public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        let uuid = peripheral.identifier
+        Task { @MainActor in
+            // Keep a pending connection to the bound device so it is re-acquired when it returns.
+            guard uuid == self.boundUUID, self.centralManager.state == .poweredOn else { return }
+            self.centralManager.connect(peripheral, options: nil)
         }
     }
 
