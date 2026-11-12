@@ -73,7 +73,7 @@ public struct MenuBarPopoverView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "sensor.tag.radiowaves.forward")
                         .foregroundStyle(.secondary)
-                    Text(engine.selectedDeviceName.isEmpty ? "No BLE key bound yet" : "Searching for \(engine.selectedDeviceName)…")
+                    Text(engine.selectedDeviceName.isEmpty ? "No device selected" : "Searching for \(engine.selectedDeviceName)…")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
@@ -107,9 +107,7 @@ public struct MenuBarPopoverView: View {
                 } label: {
                     HStack {
                         Image(systemName: "scope")
-                        Text(engine.hasNotedDeskRSSI
-                             ? "Re-Calibrate Desk (\(engine.notedDeskRSSI) dBm noted)"
-                             : "Calibrate Desk Signal (10s Scan)")
+                        Text(engine.hasNotedDeskRSSI ? "Recalibrate Desk Signal" : "Calibrate Desk Signal")
                         Spacer()
                         Text("10s")
                             .font(.system(size: 10, weight: .bold, design: .monospaced))
@@ -196,7 +194,7 @@ public struct MenuBarPopoverView: View {
                     openWindow(id: "installer-wizard")
                 } label: {
                     HStack {
-                        Label("Quick Setup Guide…", systemImage: "slider.horizontal.3")
+                        Label("Guided Setup…", systemImage: "slider.horizontal.3")
                         Spacer()
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)

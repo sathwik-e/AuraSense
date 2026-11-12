@@ -294,6 +294,45 @@ public final class BackgroundPersistenceManager: ObservableObject {
         }
     }
 
+    // MARK: - Reopen From /Applications
+
+    /// Quits this copy of AuraSense (for example one running from the disk image) and reopens the
+    /// copy installed in /Applications. A small helper waits for this process to exit first, so
+    /// the installed copy is not treated as a duplicate instance and handed back to this one.
+    /// Returns false, leaving this copy running, if the installed app is missing or the helper
+    /// could not be started.
+    @discardableResult
+    public func relaunchFromApplications(openGuidedSetup: Bool) -> Bool {
+        guard FileManager.default.fileExists(atPath: "\(Self.installedAppPath)/Contents/MacOS/AuraSense") else {
+            return false
+        }
+
+        let helper = Process()
+        helper.executableURL = URL(fileURLWithPath: "/bin/sh")
+        helper.arguments = [
+            "-c",
+            "i=0; while /bin/kill -0 \"$1\" 2>/dev/null && [ \"$i\" -lt 50 ]; do /bin/sleep 0.2; i=$((i+1)); done; /usr/bin/open -n \"$0\"",
+            Self.installedAppPath,
+            String(ProcessInfo.processInfo.processIdentifier)
+        ]
+        helper.standardOutput = FileHandle.nullDevice
+        helper.standardError = FileHandle.nullDevice
+        do {
+            try helper.run()
+        } catch {
+            statusMessage = "Couldn't reopen AuraSense from Applications: \(error.localizedDescription)"
+            return false
+        }
+
+        if openGuidedSetup {
+            // Both copies share the same preferences, so the installed copy picks this up.
+            UserDefaults.standard.set(true, forKey: WindowRouter.pendingGuidedSetupDefaultsKey)
+        }
+        allowTermination = true
+        NSApplication.shared.terminate(nil)
+        return true
+    }
+
     // MARK: - Quit Handling
 
     /// Decides whether a terminate request should really quit.

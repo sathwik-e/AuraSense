@@ -1,7 +1,7 @@
 use crate::models::{ActiveAuthPrompt, DisplayEnvironmentState};
-use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
+use core_foundation::base::{CFRelease, CFType, CFTypeRef, TCFType};
 use core_foundation::boolean::CFBoolean;
-use core_foundation::dictionary::CFDictionary;
+use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
 use core_foundation::string::{CFString, CFStringRef};
 use core_graphics::display::CGDisplay;
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, CGKeyCode};
@@ -25,11 +25,6 @@ extern "C" {
         element: AXUIElementRef,
         attribute: CFStringRef,
         value: *mut CFTypeRef,
-    ) -> AXError;
-    fn AXUIElementSetAttributeValue(
-        element: AXUIElementRef,
-        attribute: CFStringRef,
-        value: CFTypeRef,
     ) -> AXError;
     fn CGSessionCopyCurrentDictionary() -> CFTypeRef;
 }
@@ -73,14 +68,22 @@ impl MacAccessibilityController {
     }
 
     /// Checks whether the macOS session is currently on the lock screen (`CGSSessionScreenIsLocked`).
+    /// The key is only present while the screen is locked.
     pub fn is_screen_locked() -> bool {
         unsafe {
             let dict_ref = CGSessionCopyCurrentDictionary();
             if dict_ref.is_null() {
                 return false;
             }
-            CFRelease(dict_ref);
-            false
+            let dict: CFDictionary<CFString, CFType> =
+                CFDictionary::wrap_under_create_rule(dict_ref as CFDictionaryRef);
+            match dict.find(CFString::new("CGSSessionScreenIsLocked")) {
+                Some(value) => value
+                    .downcast::<CFBoolean>()
+                    .map(|flag| flag == CFBoolean::true_value())
+                    .unwrap_or(false),
+                None => false,
+            }
         }
     }
 
@@ -146,12 +149,11 @@ impl MacAccessibilityController {
 
             if is_secure_field {
                 let lower_app = app_title.to_lowercase();
+                // Only macOS's own authentication prompts qualify. A browser exposes a web
+                // page's password box as a secure field too, and page script could read it.
                 let is_keychain = lower_app.contains("coreauth")
                     || lower_app.contains("securityagent")
-                    || lower_app.contains("safari")
-                    || lower_app.contains("autofill")
-                    || lower_app.contains("system settings")
-                    || lower_app.contains("keychain");
+                    || lower_app.contains("loginwindow");
 
                 return Some(ActiveAuthPrompt {
                     process_name: app_title.clone(),
@@ -175,8 +177,8 @@ impl MacAccessibilityController {
         None
     }
 
-    /// Fills the currently focused iCloud Keychain / `CoreAuthUI` / Lock Screen password field
-    /// using Accessibility attribute setting + HID Unicode `CGEvent` synthesis, then presses Return.
+    /// Types the password into the focused field with Unicode `CGEvent`s, then presses Return.
+    /// Callers must first confirm the target is the lock screen or a system password prompt.
     pub fn autofill_password(password: &str, nudge_wake: bool) -> Result<(), String> {
         if !Self::is_accessibility_trusted(false) {
             return Err(
@@ -193,32 +195,6 @@ impl MacAccessibilityController {
         if nudge_wake {
             Self::post_key_tap(&source, KEY_SHIFT, CGEventFlags::empty());
             thread::sleep(Duration::from_millis(160));
-        }
-
-        // First try direct AXValue injection if an AXSecureTextField allows it
-        unsafe {
-            let system_wide = AXUIElementCreateSystemWide();
-            if !system_wide.is_null() {
-                let focused_attr = CFString::new("AXFocusedUIElement");
-                let mut focused_elem: CFTypeRef = ptr::null();
-                if AXUIElementCopyAttributeValue(
-                    system_wide,
-                    focused_attr.as_concrete_TypeRef(),
-                    &mut focused_elem,
-                ) == K_AX_ERROR_SUCCESS
-                    && !focused_elem.is_null()
-                {
-                    let val_attr = CFString::new("AXValue");
-                    let pw_cf = CFString::new(password);
-                    let _ = AXUIElementSetAttributeValue(
-                        focused_elem as AXUIElementRef,
-                        val_attr.as_concrete_TypeRef(),
-                        pw_cf.as_CFTypeRef(),
-                    );
-                    CFRelease(focused_elem);
-                }
-                CFRelease(system_wide as CFTypeRef);
-            }
         }
 
         // Synthesize high-reliability Unicode HID CGEvents for each UTF-16 code unit

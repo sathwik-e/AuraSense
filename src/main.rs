@@ -47,7 +47,7 @@ fn main() {
     }
 
     println!("==================================================================");
-    println!("  AuraSense Rust Engine v1.1.0 (BLE Proximity + Face ID Bridge)");
+    println!("  AuraSense Rust Engine v1.2.0 (experimental standalone daemon)");
     println!("==================================================================");
     println!(
         "  • Accessibility Trusted : {}",
@@ -66,19 +66,25 @@ fn main() {
             .is_some()
     );
     println!(
-        "  • Face ID Passkey Relay : http://0.0.0.0:{}/faceid",
+        "  • iPhone Fill Bridge    : port {} (pairing token required)",
         config.passkey_relay_port
     );
     println!("==================================================================");
 
     let engine = Arc::new(Mutex::new(BleProximityEngine::new(config.clone())));
 
-    // Spawn the Local WebAuthn Passkey & iOS Shortcut Face ID Relay Server thread
+    // Start the token-protected iPhone fill bridge on its own thread.
     let bridge_port = config.passkey_relay_port;
-    thread::spawn(move || {
-        let server = FaceIdPasskeyBridgeServer::new(bridge_port);
-        let _ = server.run_blocking();
-    });
+    match FaceIdPasskeyBridgeServer::new(bridge_port) {
+        Ok(server) => {
+            thread::spawn(move || {
+                if let Err(e) = server.run_blocking() {
+                    eprintln!("[AuraSense-Rust] Auto-Fill server stopped: {}", e);
+                }
+            });
+        }
+        Err(e) => eprintln!("[AuraSense-Rust] Auto-Fill server not started: {}", e),
+    }
 
     // Main low-latency 10Hz Rust proximity & iCloud Keychain prompt watcher loop
     loop {

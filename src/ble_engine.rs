@@ -49,7 +49,7 @@ impl BleProximityEngine {
         is_connected: bool,
         manufacturer_data: Option<&[u8]>,
     ) -> ProximityEvaluationOutcome {
-        if raw_rssi >= 0 || raw_rssi < -115 {
+        if !(-115..0).contains(&raw_rssi) {
             return ProximityEvaluationOutcome::NoAction;
         }
 

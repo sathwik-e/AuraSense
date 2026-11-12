@@ -415,7 +415,7 @@ func renderDMGBackground(scale: CGFloat) -> NSBitmapImageRep {
     drawPedestal(
         center: leftCenter,
         borderTint: NSColor(calibratedRed: 0.22, green: 0.84, blue: 1.0, alpha: 0.55),
-        badgeText: "AURASENSE V1"
+        badgeText: "AURASENSE"
     )
     drawPedestal(
         center: rightCenter,
@@ -460,7 +460,7 @@ func renderDMGBackground(scale: CGFloat) -> NSBitmapImageRep {
     brandStr.draw(at: CGPoint(x: centerPoint.x - titleSize.width / 2, y: logicalH - 60))
 
     let subStr = NSAttributedString(
-        string: "BLE Proximity Lock & Instant Keychain Auto-Fill for macOS (v1)",
+        string: "Bluetooth proximity lock and unlock for your Mac",
         attributes: [
             .font: NSFont.systemFont(ofSize: 12.5, weight: .regular),
             .foregroundColor: NSColor(calibratedRed: 0.68, green: 0.84, blue: 0.98, alpha: 0.88)
@@ -478,7 +478,7 @@ func renderDMGBackground(scale: CGFloat) -> NSBitmapImageRep {
     footerPath.stroke()
 
     let footerText = NSAttributedString(
-        string: "Drag AuraSense.app to Applications to install",
+        string: "Drag AuraSense into Applications to install",
         attributes: [
             .font: NSFont.systemFont(ofSize: 12, weight: .medium),
             .foregroundColor: NSColor(calibratedWhite: 0.92, alpha: 0.95)

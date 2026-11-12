@@ -103,15 +103,13 @@ public struct AuraRadarView: View {
 
         return AuraGlassCard(padding: 22) {
             VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Live Proximity Field")
-                            .font(.system(size: 16, weight: .semibold, design: .rounded))
-                        Text("Concentric thresholds visualize your Unlock Aura (inner) and Auto-Lock Boundary (outer)")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
+                // Stacked, so the reading never squeezes the title when the window is narrow.
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Live Proximity Field")
+                        .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    Text("Inner ring: unlock range. Outer ring: auto-lock boundary.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
                     if let dev = engine.trackedDevice {
                         AuraStatusPill(
                             title: "\(Int(dev.smoothedRSSI.rounded())) dBm • \(dev.formattedDistance)",
@@ -336,7 +334,7 @@ public struct AuraRadarView: View {
         AuraGlassCard(padding: 18) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Label("Instant Actions & Radar Sim", systemImage: "sparkles.tv")
+                    Label("Quick Actions", systemImage: "bolt.fill")
                         .font(.system(size: 14, weight: .semibold, design: .rounded))
                     Spacer()
                     #if DEBUG
@@ -379,12 +377,12 @@ public struct AuraRadarView: View {
                             .fill(AuraTheme.cyanGlow.opacity(0.08))
                     )
                 } else {
-                    Text("Test locking your Mac or verify the Accessibility Keychain unlock sequence anytime.")
+                    Text("Lock your Mac now, or check that the unlock sequence works.")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
                 #else
-                Text("Test locking your Mac or verify the Accessibility Keychain unlock sequence anytime.")
+                Text("Lock your Mac now, or check that the unlock sequence works.")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                 #endif
@@ -418,19 +416,14 @@ public struct AuraRadarView: View {
 
         return AuraGlassCard(padding: 18) {
             VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Kalman-Smoothed RSSI Telemetry")
-                            .font(.system(size: 15, weight: .semibold, design: .rounded))
-                        Text("Real-time signal trajectory against Unlock (\(Int(engine.unlockThresholdRSSI)) dBm) and Lock (\(Int(engine.lockThresholdRSSI)) dBm) boundaries")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    }
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Signal History")
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
                     Spacer()
                     HStack(spacing: 14) {
-                        legendDot(title: "Filtered RSSI", color: AuraTheme.cyanGlow)
-                        legendDot(title: "Unlock Zone", color: AuraTheme.emeraldGlow)
-                        legendDot(title: "Lock Threshold", color: AuraTheme.crimsonGlow)
+                        legendDot(title: "Signal", color: AuraTheme.cyanGlow)
+                        legendDot(title: "Unlock at \(Int(engine.unlockThresholdRSSI)) dBm", color: AuraTheme.emeraldGlow)
+                        legendDot(title: "Lock at \(Int(engine.lockThresholdRSSI)) dBm", color: AuraTheme.crimsonGlow)
                     }
                 }
 
@@ -484,7 +477,9 @@ public struct AuraRadarView: View {
                                 style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round)
                             )
                         } else {
-                            Text("Waiting for BLE RSSI telemetry samples… (Or enable 'Sim Mode' above to preview)")
+                            Text(engine.selectedDeviceID.isEmpty
+                                 ? "Select a device to see its signal here."
+                                 : "Waiting for a signal from your device…")
                                 .font(.system(size: 12))
                                 .foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
