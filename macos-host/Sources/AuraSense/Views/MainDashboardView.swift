@@ -29,7 +29,9 @@ public struct MainDashboardView: View {
     @ObservedObject var lockController = MacLockUnlockController.shared
     @Environment(\.openWindow) private var openWindow
     @AuraState private var selectedSection: DashboardSection = .radar
-    @AuraState private var showGuidedSetupWizard: Bool = BLEProximityEngine.shared.needsGuidedSetup || AuraLaunchMode.requestedGuidedSetup
+    /// Setup takes over the window only until it has been finished once (or when asked for).
+    /// Later gaps (a permission revoked by an update, a missing password) show the banner instead.
+    @AuraState private var showGuidedSetupWizard: Bool = !BLEProximityEngine.shared.hasCompletedOnboarding || AuraLaunchMode.requestedGuidedSetup
     /// Cached so `body` never queries the Keychain; refreshed on KeychainManager change notifications.
     @AuraState private var hasStoredPassword: Bool = KeychainManager.shared.hasStoredPassword()
 
@@ -47,6 +49,7 @@ public struct MainDashboardView: View {
                 dashboardSplitView
             }
         }
+        .preferredColorScheme(.dark)
         .onAppear {
             WindowRouter.shared.register(openWindow)
             if WindowRouter.shared.consumeInitialWindowSuppression() {
@@ -58,7 +61,7 @@ public struct MainDashboardView: View {
             }
             hasStoredPassword = KeychainManager.shared.hasStoredPassword()
             // `--setup` (installer hand-off) always opens Guided Setup once.
-            if WindowRouter.shared.consumeGuidedSetupRequest() || engine.needsGuidedSetup {
+            if WindowRouter.shared.consumeGuidedSetupRequest() || !engine.hasCompletedOnboarding {
                 showGuidedSetupWizard = true
             }
         }
@@ -75,7 +78,7 @@ public struct MainDashboardView: View {
                     AuraEclipseLogoView(size: 36)
                     VStack(alignment: .leading, spacing: 2) {
                         AuraBrandWordmarkView(size: 13, tracking: 2.2)
-                        Text("BLE Proximity v1.1")
+                        Text("Version \(AuraTheme.appVersion)")
                             .font(.system(size: 10.5, weight: .medium))
                             .foregroundStyle(.secondary)
                     }
@@ -98,22 +101,9 @@ public struct MainDashboardView: View {
                         Circle()
                             .fill(lockController.isAccessibilityTrusted ? AuraTheme.emeraldGlow : .orange)
                             .frame(width: 8, height: 8)
-                        Text(lockController.isAccessibilityTrusted ? "Accessibility Trusted" : "Accessibility Required")
+                        Text(lockController.isAccessibilityTrusted ? "Accessibility granted" : "Accessibility needed")
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(.secondary)
-                    }
-
-                    if !lockController.isAccessibilityTrusted {
-                        Button {
-                            lockController.promptForAccessibilityPermission(resetStaleEntryIfNeeded: false, openSettingsPane: true)
-                        } label: {
-                            Label("Prompt Permission", systemImage: "hand.raised.fill")
-                                .font(.system(size: 12, weight: .semibold))
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(AuraTheme.indigoGlow)
-                        .controlSize(.small)
                     }
 
                     Button {
@@ -121,7 +111,7 @@ public struct MainDashboardView: View {
                             showGuidedSetupWizard = true
                         }
                     } label: {
-                        Label("Guided Setup Wizard", systemImage: "slider.horizontal.3")
+                        Label("Guided Setup", systemImage: "slider.horizontal.3")
                             .font(.system(size: 12, weight: .medium))
                             .frame(maxWidth: .infinity)
                     }
@@ -142,11 +132,11 @@ public struct MainDashboardView: View {
                         VStack(alignment: .leading, spacing: 1) {
                             Text(
                                 !lockController.isAccessibilityTrusted
-                                    ? "Accessibility Permission Required for Auto-Unlock & Password Fill"
-                                    : (engine.selectedDeviceID.isEmpty ? "No Bluetooth Device Selected Yet" : "Save Your Mac Login Password in Keychain")
+                                    ? "Accessibility permission is off"
+                                    : (engine.selectedDeviceID.isEmpty ? "No device selected" : "Mac password not saved")
                             )
                             .font(.system(size: 12.5, weight: .bold))
-                            Text("Click 'Open Guided Setup' or 'Prompt Accessibility' to complete setup.")
+                            Text("Automatic unlock is paused until this is fixed.")
                                 .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
                         }
@@ -154,7 +144,7 @@ public struct MainDashboardView: View {
                         Spacer()
 
                         if !lockController.isAccessibilityTrusted {
-                            Button("Prompt Accessibility…") {
+                            Button("Open Settings…") {
                                 lockController.promptForAccessibilityPermission(resetStaleEntryIfNeeded: false, openSettingsPane: true)
                             }
                             .buttonStyle(.borderedProminent)
@@ -162,13 +152,12 @@ public struct MainDashboardView: View {
                             .controlSize(.small)
                         }
 
-                        Button("Open Guided Setup") {
+                        Button("Open Setup") {
                             withAnimation(.easeInOut(duration: 0.25)) {
                                 showGuidedSetupWizard = true
                             }
                         }
-                        .buttonStyle(.borderedProminent)
-                        .tint(AuraTheme.cyanGlow)
+                        .buttonStyle(.bordered)
                         .controlSize(.small)
                     }
                     .padding(.horizontal, 18)
@@ -234,6 +223,6 @@ public struct MainDashboardView: View {
                 }
             }
         }
-        .frame(minWidth: 940, minHeight: 620)
+        .frame(minWidth: 980, minHeight: 640)
     }
 }

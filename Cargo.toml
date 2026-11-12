@@ -1,6 +1,6 @@
 [package]
 name = "aurasense-rs"
-version = "1.0.0"
+version = "1.2.0"
 edition = "2021"
 authors = ["AuraSense Project"]
 description = "Rust BLE proximity lock/unlock daemon and instant Keychain auto-filler for macOS"
@@ -15,8 +15,6 @@ objc2 = "0.5"
 objc2-foundation = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-hmac = "0.12"
-sha2 = "0.10"
 base64 = "0.22"
 
 [profile.release]

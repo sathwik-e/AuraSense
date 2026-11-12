@@ -42,6 +42,7 @@ jobs:
         # keychain first and set SIGN_IDENTITY for this step.
         env:
           SIGN_IDENTITY: "-"
+          # The DMG still builds if the runner cannot script Finder; only the window styling is skipped.
         run: |
           chmod +x macos-host/Scripts/build_and_package.sh
           macos-host/Scripts/build_and_package.sh

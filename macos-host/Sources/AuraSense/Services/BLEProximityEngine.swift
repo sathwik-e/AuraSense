@@ -68,13 +68,6 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
     @AppStorage("aurasense.launchAtLogin") public var launchAtLogin: Bool = false
     @AppStorage("aurasense.v101.hasCompletedGuidedSetup") public var hasCompletedOnboarding: Bool = false
 
-    public var needsGuidedSetup: Bool {
-        !hasCompletedOnboarding ||
-        !MacLockUnlockController.shared.isAccessibilityTrusted ||
-        !KeychainManager.shared.hasStoredPassword() ||
-        selectedDeviceID.isEmpty
-    }
-
     /// True only when the bound (real, non-simulated) device has been heard within
     /// `signalLossTimeoutSeconds` and its smoothed signal is at or above the lock threshold.
     public var isBoundDevicePresent: Bool {

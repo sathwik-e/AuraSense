@@ -1,14 +1,25 @@
-# AuraSense v1.1
+# AuraSense v1.2
 
-AuraSense is a Bluetooth Low Energy (BLE) proximity lock, external monitor wake, and instant Keychain password auto-fill app for macOS. It lives in your macOS menu bar with an Eclipse + Proximity Orbit icon and hides from the Dock whenever you close its window.
+AuraSense is a Bluetooth Low Energy (BLE) proximity lock, external monitor wake, and instant Keychain password auto-fill app for macOS. It lives in your macOS menu bar and hides from the Dock whenever you close its window.
 
-## Quick Setup (Guided in App)
+## Install
 
-1. **Install**: Open `AuraSense.dmg` and either drag `AuraSense.app` into `Applications`, or open `Install AuraSense.app`. The installer only copies `AuraSense.app` into `/Applications`, opens it, and quits. If it can't copy the app, it shows **Show in Finder** so you can drag the app over yourself.
-2. **Guided Setup**: `/Applications/AuraSense.app` opens the 4-step Guided Setup. Setup always runs inside the installed app, so your device, calibration, permissions and Keychain item all belong to it.
-3. **Grant Permissions**: In **Step 2**, click **Prompt Permission** to grant **Accessibility** and **Bluetooth**.
-4. **Select Device & Calibrate**: In **Step 3**, select your iPhone or Apple Watch, place it on your desk, and click **Start 10s Desk Signal Scan**.
-5. **Save Password & Auto-Fill**: In **Step 4**, save your Mac login password to the local Keychain. If the Keychain write fails, Setup shows the error instead of reporting success.
+1. Open `AuraSense.dmg`.
+2. Drag **AuraSense** onto **Applications**.
+3. Open AuraSense from Applications. Guided Setup starts on first launch.
+
+AuraSense is not notarized. If macOS says it cannot verify the app the first time you open it, go to **System Settings › Privacy & Security** and choose **Open Anyway**.
+
+If you open AuraSense straight from the disk image (or from Downloads), the first Setup step offers **Install in Applications**. It copies the app, then reopens it from Applications so your permissions, login item and Keychain item all belong to the installed copy.
+
+## Guided Setup
+
+1. **Install**: only shown when AuraSense is not running from Applications.
+2. **Permissions**: grant **Accessibility** and **Bluetooth**. System Settings opens only when you press the button, and the step updates by itself once macOS reports the permission.
+3. **Device**: select your iPhone or Apple Watch, leave it on your desk, and run the 10-second signal scan.
+4. **Password**: save your Mac login password to the local Keychain. If the Keychain write fails, Setup shows the error instead of reporting success. Optionally scan the QR code with your iPhone to set up password fill from the phone.
+
+Setup takes over the window only until you have finished it once. After that, anything missing (for example Accessibility after an update) appears as a banner at the top of the dashboard, and **Open Setup** takes you to the step that needs attention.
 
 ## Trusted Device Protection
 
@@ -37,22 +48,32 @@ When your Mac is connected to an external monitor and asks for a password:
 
 ## Release Files
 
-- `releases/v1/AuraSense.dmg`: macOS disk image (AuraSense.app, Install AuraSense.app, Applications shortcut).
-- `releases/v1/AuraSense.app.zip`: zipped macOS application bundle.
+- `releases/v1/AuraSense.dmg`: compressed disk image (AuraSense.app and an Applications shortcut).
+- `releases/v1/AuraSense.app.zip`: zipped application bundle.
 
-Pushing a `v*` tag (for example `v1.1`) builds the app from source on macOS and publishes these files as a GitHub Release. The tag must match `CFBundleShortVersionString` in `macos-host/Resources/Info.plist`.
+Pushing a `v*` tag (for example `v1.2`) builds the app from source on macOS and publishes these files as a GitHub Release. The tag must match `CFBundleShortVersionString` in `macos-host/Resources/Info.plist`.
 
 ## Build from Source
+
+Requires macOS 14 or later with the Xcode Command Line Tools (`xcode-select --install`).
 
 ```bash
 cd macos-host && ./Scripts/build_and_package.sh
 ```
 
-The build signs ad-hoc by default. An ad-hoc signature changes the app's code identity on every build, so after installing a new build macOS may ask you to grant Accessibility again and to allow Keychain access. To keep a stable identity, sign with a Developer ID or a persistent self-signed certificate:
+The script compiles the app, signs it, and builds `AuraSense.dmg` with `hdiutil`. The first run asks to let your terminal control Finder; allow it so the disk image window gets its background and icon layout. Without that permission the DMG still works, it just opens as a plain Finder window.
 
-```bash
-SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./Scripts/build_and_package.sh
-```
+Options (environment variables):
+
+- `SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"`: sign with a stable identity.
+- `UNIVERSAL=1`: also build for Intel Macs (universal binary). The default is Apple Silicon only.
+- `SKIP_DMG_LAYOUT=1`: skip the Finder layout step on headless machines.
+
+The build signs ad-hoc by default. An ad-hoc signature changes the app's code identity on every build, so after installing a new build macOS may ask you to grant Accessibility again and to allow Keychain access. A Developer ID or a persistent self-signed certificate avoids that.
+
+## Experimental Rust Daemon
+
+`src/` holds a standalone Rust prototype of the fill bridge (`./build_rust.sh`, needs `cargo`). It is not part of AuraSense.app and has no Bluetooth scanning of its own. It uses the same pairing token and port as the app, so do not run both at once.
 
 ## License
 

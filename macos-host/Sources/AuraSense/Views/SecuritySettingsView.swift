@@ -43,9 +43,9 @@ public struct SecuritySettingsView: View {
         AuraGlassCard(padding: 20) {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("macOS System Permissions")
+                    Text("Permissions")
                         .font(.system(size: 18, weight: .bold, design: .rounded))
-                    Text("AuraSense uses macOS Accessibility events to wake external monitor inputs and enter your Keychain password when your device enters range.")
+                    Text("AuraSense uses Accessibility to wake your displays and type your password when your device comes into range.")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                 }
@@ -62,7 +62,7 @@ public struct SecuritySettingsView: View {
 
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 8) {
-                            Text("Accessibility Control (AXIsProcessTrusted)")
+                            Text("Accessibility")
                                 .font(.system(size: 14, weight: .semibold))
                             AuraStatusPill(
                                 title: lockController.isAccessibilityTrusted ? "Granted" : "Action Needed",
@@ -70,7 +70,7 @@ public struct SecuritySettingsView: View {
                                 color: lockController.isAccessibilityTrusted ? AuraTheme.emeraldGlow : .orange
                             )
                         }
-                        Text("Required for lock screen password entry, external monitor input wake nudges, and ⌃⌥⌘Space instant fill.")
+                        Text("Needed to type your password on the lock screen, wake external displays and use Instant Fill.")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                     }
@@ -97,7 +97,7 @@ public struct SecuritySettingsView: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 10) {
-                            Text("macOS Keychain Unlock Credentials")
+                            Text("Mac Login Password")
                                 .font(.system(size: 16, weight: .bold, design: .rounded))
                             AuraStatusPill(
                                 title: hasStoredPassword ? "Stored in Keychain" : "Not Configured",
@@ -105,7 +105,7 @@ public struct SecuritySettingsView: View {
                                 color: hasStoredPassword ? AuraTheme.emeraldGlow : .orange
                             )
                         }
-                        Text("Encrypted inside your local macOS login Keychain (`com.aurasense.mac.unlock-credentials`). Never stored in plain text.")
+                        Text("Stored encrypted in this Mac's login Keychain. Never written anywhere in plain text.")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                     }
@@ -166,9 +166,9 @@ public struct SecuritySettingsView: View {
         AuraGlassCard(padding: 20, borderColor: AuraTheme.indigoGlow.opacity(0.4)) {
             VStack(alignment: .leading, spacing: 14) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Simpler, Rock-Solid Keychain Alternatives (No Fickle Auto-Detection)")
+                    Text("Password Prompts While Unlocked")
                         .font(.system(size: 16, weight: .bold, design: .rounded))
-                    Text("macOS SecurityAgent & CoreAuthUI dialogs use Secure Input, which can make automatic background focus guessing fickle. Use these rock-solid alternatives instead:")
+                    Text("macOS does not let apps detect its password prompts reliably, so AuraSense fills them only when you ask. These options cover the prompts you see during the day.")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
@@ -181,18 +181,19 @@ public struct SecuritySettingsView: View {
                         .frame(width: 34)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("1. On-Demand Instant Fill Hotkey (⌃⌥⌘Space)")
+                        Text("Instant Fill hotkey (⌃⌥⌘Space)")
                             .font(.system(size: 13, weight: .semibold))
-                        Text("When a macOS system password prompt (Keychain, admin authorization) appears, press ⌃⌥⌘Space to type your password + Return. For your security it only fills genuine macOS system prompts — never web pages, other apps, or AuraSense's own prompts — and the password is never copied to the clipboard.")
+                        Text("Press ⌃⌥⌘Space on a macOS password prompt to type your password and press Return. It fills only genuine system prompts, never web pages, other apps or AuraSense's own prompts, and never uses the clipboard.")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
 
                     Spacer()
 
-                    Toggle("Enable Hotkeys", isOn: $lockController.enableGlobalInstantFillHotkey)
+                    Toggle("Instant Fill hotkey", isOn: $lockController.enableGlobalInstantFillHotkey)
                         .toggleStyle(.switch)
                         .controlSize(.small)
+                        .labelsHidden()
                 }
                 .padding(10)
                 .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.05)))
@@ -205,9 +206,9 @@ public struct SecuritySettingsView: View {
                         .frame(width: 34)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("2. Stop Login Keychain From Re-Locking While Mac is Unlocked")
+                        Text("Keep the login Keychain unlocked")
                             .font(.system(size: 13, weight: .semibold))
-                        Text("Disables inactivity/sleep re-locking on login.keychain-db so macOS doesn't repeatedly ask for your Keychain password while AuraSense keeps your Mac unlocked.")
+                        Text("Stops the login Keychain re-locking after sleep or inactivity, so macOS asks for the Keychain password less often.")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                         if let status = keychainOptimizerStatus {
@@ -219,7 +220,7 @@ public struct SecuritySettingsView: View {
 
                     Spacer()
 
-                    Button("Optimize Keychain") {
+                    Button("Apply") {
                         let (_, msg) = lockController.optimizeLoginKeychainStayUnlocked()
                         keychainOptimizerStatus = msg
                     }
@@ -238,16 +239,16 @@ public struct SecuritySettingsView: View {
                         .frame(width: 34)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("3. Native Apple Watch Approval or Magic Keyboard with Touch ID")
+                        Text("Apple Watch or Touch ID approval")
                             .font(.system(size: 13, weight: .semibold))
-                        Text("Enable 'Use Apple Watch to unlock your applications and your Mac' in System Settings so double-clicking your Watch approves iCloud Keychain prompts in clamshell mode.")
+                        Text("Turn on Apple Watch unlock in System Settings to approve password prompts with a double-click, including with the lid closed.")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
 
                     Spacer()
 
-                    Button("Open Touch ID Settings") {
+                    Button("Open Settings…") {
                         lockController.openTouchIdAndAppleWatchSettings()
                     }
                     .buttonStyle(.bordered)
@@ -265,13 +266,13 @@ public struct SecuritySettingsView: View {
         AuraGlassCard(padding: 20) {
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
-                    Text("Menu Bar Mode & External Monitor Input Signaling")
+                    Text("Behaviour")
                         .font(.system(size: 16, weight: .bold, design: .rounded))
                     Spacer()
                     AuraStatusPill(
                         title: lockController.hasExternalMonitorConnected
-                            ? "External Monitor Connected (\(lockController.connectedDisplayCount) Displays)"
-                            : "Built-In Display Only",
+                            ? "\(lockController.connectedDisplayCount) displays connected"
+                            : "Built-in display only",
                         symbol: "display.2",
                         color: lockController.hasExternalMonitorConnected ? AuraTheme.emeraldGlow : .secondary
                     )
@@ -279,9 +280,9 @@ public struct SecuritySettingsView: View {
 
                 Toggle(isOn: $dockManager.hideDockWhenWindowClosed) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Hide Dock Icon When Window is Closed (Menu-Bar-Only Mode)")
+                        Text("Hide the Dock icon when the window is closed")
                             .font(.system(size: 13, weight: .medium))
-                        Text("Removes AuraSense from the Dock and Cmd+Tab switcher whenever you close the dashboard window.")
+                        Text("AuraSense then lives only in the menu bar.")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
@@ -292,9 +293,9 @@ public struct SecuritySettingsView: View {
 
                 Toggle(isOn: $lockController.sendMonitorInputSignal) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Send Active DisplayPort / HDMI Input Wake Signal to External Monitors")
+                        Text("Wake external displays before unlocking")
                             .font(.system(size: 13, weight: .medium))
-                        Text("Wakes IODisplayWrangler, triggers caffeinate link wake, and nudges the external monitor framebuffer before unlocking.")
+                        Text("Wakes HDMI, DisplayPort and USB-C monitors so the lock screen is ready for the password.")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
@@ -305,9 +306,9 @@ public struct SecuritySettingsView: View {
 
                 Toggle(isOn: $engine.autoUnlockEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Automatically Unlock Mac When Device Enters Aura")
+                        Text("Unlock automatically when my device arrives")
                             .font(.system(size: 13, weight: .medium))
-                        Text("Wakes external monitor input and enters your Keychain password via Accessibility events.")
+                        Text("Wakes the display and types your saved password on the lock screen.")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
@@ -318,9 +319,9 @@ public struct SecuritySettingsView: View {
 
                 Toggle(isOn: $engine.autoLockEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Automatically Lock Mac When Device Leaves Aura")
+                        Text("Lock automatically when my device leaves")
                             .font(.system(size: 13, weight: .medium))
-                        Text("Invokes SACLockScreenImmediate after the departure grace countdown completes.")
+                        Text("Locks the screen after the grace period ends.")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
@@ -341,7 +342,7 @@ public struct SecuritySettingsView: View {
                 )) {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
-                            Text("Keep AuraSense Running After Quit")
+                            Text("Keep AuraSense running after Quit")
                                 .font(.system(size: 13, weight: .medium))
                             Image(systemName: "lock.fill")
                                 .font(.system(size: 10))
@@ -380,11 +381,11 @@ public struct SecuritySettingsView: View {
                     set: { engine.setLaunchAtLogin($0) }
                 )) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Launch AuraSense Automatically at Login")
+                        Text("Open AuraSense at login")
                             .font(.system(size: 13, weight: .medium))
                         Text(persistence.keepRunningInBackground
-                             ? "Included with Keep AuraSense Running After Quit."
-                             : "Starts quietly in the macOS Menu Bar when you log in.")
+                             ? "Included with Keep AuraSense running after Quit."
+                             : "Starts quietly in the menu bar when you log in.")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }

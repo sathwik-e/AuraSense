@@ -35,11 +35,11 @@ public struct ThresholdsView: View {
 
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 10) {
-                            Text("10-Second Desk Signal Calibration")
+                            Text("Desk Signal Calibration")
                                 .font(.system(size: 18, weight: .bold, design: .rounded))
                             if engine.hasNotedDeskRSSI {
                                 AuraStatusPill(
-                                    title: "Noted Desk Baseline: \(engine.notedDeskRSSI) dBm (±\(String(format: "%.1f", engine.notedDeskJitterDB)) dB)",
+                                    title: "Baseline \(engine.notedDeskRSSI) dBm",
                                     symbol: "checkmark.seal.fill",
                                     color: AuraTheme.emeraldGlow
                                 )
@@ -261,7 +261,7 @@ public struct ThresholdsView: View {
 
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
-                        Text("Kalman / EMA Responsiveness")
+                        Text("Signal Smoothing")
                             .font(.system(size: 13, weight: .medium))
                         Spacer()
                         Text(String(format: "α = %.2f", engine.smoothingFactor))

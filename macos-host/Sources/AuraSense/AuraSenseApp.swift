@@ -10,9 +10,10 @@ public enum AuraLaunchMode {
     public static let installerBundleIdentifier = "com.aurasense.mac.installer"
 
     public static let isInstallerBundle: Bool = {
+        // Decided by bundle identifier only. Matching on the bundle path made the real app act as
+        // an installer whenever it sat in a folder whose name contained "Install AuraSense".
         Bundle.main.bundleIdentifier == installerBundleIdentifier ||
-        CommandLine.arguments.contains("--installer") ||
-        Bundle.main.bundlePath.lowercased().contains("install aurasense")
+        CommandLine.arguments.contains("--installer")
     }()
 
     /// `/Applications/AuraSense.app --setup` (launched by the installer) opens the Guided Setup.
@@ -235,6 +236,9 @@ public final class AuraSenseAppDelegate: NSObject, NSApplicationDelegate {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
             Task { @MainActor in
+                // Until Guided Setup has been finished it explains and requests this permission
+                // itself; prompting here as well would stack a system alert on top of its first step.
+                guard BLEProximityEngine.shared.hasCompletedOnboarding else { return }
                 if !MacLockUnlockController.shared.refreshAccessibilityStatus(prompt: false) {
                     MacLockUnlockController.shared.promptForAccessibilityPermission(
                         resetStaleEntryIfNeeded: false,
@@ -376,6 +380,7 @@ public struct AuraSenseApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .windowToolbarStyle(.unified(showsTitle: true))
+        .defaultSize(width: 1080, height: 720)
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandMenu("Aura Protection") {
@@ -390,6 +395,7 @@ public struct AuraSenseApp: App {
                 InstallerBundleView()
             } else {
                 InstallerWindowView()
+                    .frame(width: 760, height: 600)
             }
         }
         .windowResizability(.contentSize)
@@ -400,6 +406,7 @@ public struct AuraSenseApp: App {
         // The installer bundle shows no menu bar item.
         MenuBarExtra(isInserted: .constant(!launchedAsInstaller)) {
             MenuBarPopoverView()
+                .preferredColorScheme(.dark)
         } label: {
             Image(systemName: menuBarEclipseSymbolName)
                 .accessibilityLabel("AuraSense")
@@ -413,6 +420,7 @@ public struct AuraSenseApp: App {
             } else {
                 SecuritySettingsView()
                     .frame(width: 680, height: 560)
+                    .preferredColorScheme(.dark)
             }
         }
     }

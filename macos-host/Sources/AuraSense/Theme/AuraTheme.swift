@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import CoreImage
 
 /// Drop-in DynamicProperty state wrapper backed by StateObject so AuraSense compiles cleanly
 /// under both Xcode and standalone macOS CommandLineTools.
@@ -45,6 +46,11 @@ public enum AuraTheme {
     public static let amberGlow = Color(red: 1.0, green: 0.72, blue: 0.22)
     public static let crimsonGlow = Color(red: 0.98, green: 0.34, blue: 0.46)
     public static let deepMidnight = Color(red: 0.02, green: 0.04, blue: 0.09)
+
+    /// Marketing version from Info.plist, so the UI never shows a stale hard-coded number.
+    public static var appVersion: String {
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.2"
+    }
 
     public static var auraLinearGradient: LinearGradient {
         LinearGradient(
@@ -116,7 +122,7 @@ public struct AuraBrandWordmarkView: View {
             Text("ΛURΛ")
                 .font(.system(size: size, weight: .light, design: .default))
                 .tracking(tracking)
-                .foregroundStyle(.white)
+                .foregroundStyle(Color.primary)
             Text("SENSE")
                 .font(.system(size: size, weight: .light, design: .default))
                 .tracking(tracking)
@@ -299,5 +305,65 @@ public struct AuraStatusPill: View {
             Capsule(style: .continuous)
                 .strokeBorder(color.opacity(0.35), lineWidth: 1)
         )
+    }
+}
+
+// MARK: - QR Code
+
+/// Renders `text` as a QR code on a white tile (white is required for phone cameras to read it).
+public struct AuraQRCodeView: View {
+    public let text: String
+    public let side: CGFloat
+
+    public init(text: String, side: CGFloat = 96) {
+        self.text = text
+        self.side = side
+    }
+
+    public var body: some View {
+        Group {
+            if let image = AuraQRCodeRenderer.image(for: text) {
+                Image(nsImage: image)
+                    .interpolation(.none)
+                    .resizable()
+                    .frame(width: side, height: side)
+            } else {
+                Image(systemName: "qrcode")
+                    .font(.system(size: side * 0.5))
+                    .foregroundStyle(Color.black)
+                    .frame(width: side, height: side)
+            }
+        }
+        .padding(6)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.white)
+        )
+        .accessibilityLabel(Text("QR code for the iPhone pairing link"))
+    }
+}
+
+/// Generates QR images with Core Image and remembers the last one, because the views that show
+/// it re-render every time the Bluetooth engine publishes a new reading.
+@MainActor
+enum AuraQRCodeRenderer {
+    private static var cachedText: String?
+    private static var cachedImage: NSImage?
+
+    static func image(for text: String) -> NSImage? {
+        if cachedText == text, let cachedImage {
+            return cachedImage
+        }
+        guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+        filter.setValue(Data(text.utf8), forKey: "inputMessage")
+        filter.setValue("M", forKey: "inputCorrectionLevel")
+        guard let output = filter.outputImage else { return nil }
+        let scaled = output.transformed(by: CGAffineTransform(scaleX: 8, y: 8))
+        let rep = NSCIImageRep(ciImage: scaled)
+        let image = NSImage(size: rep.size)
+        image.addRepresentation(rep)
+        cachedText = text
+        cachedImage = image
+        return image
     }
 }

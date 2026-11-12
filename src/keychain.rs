@@ -1,13 +1,18 @@
 use security_framework::passwords::{
     delete_generic_password, get_generic_password, set_generic_password,
 };
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use std::fmt;
+use std::fs::File;
+use std::io::Read;
 
 const UNLOCK_SERVICE: &str = "com.aurasense.mac.unlock-credentials";
 const UNLOCK_ACCOUNT: &str = "macOSLoginPassword";
 
-const FACEID_BRIDGE_SERVICE: &str = "com.aurasense.mac.faceid-bridge";
-const FACEID_HMAC_ACCOUNT: &str = "iPhoneFaceIdHmacSecret";
+// Same Keychain item the AuraSense app uses, so one pairing link works for both.
+const BRIDGE_TOKEN_SERVICE: &str = "com.aurasense.mac.bridge-token";
+const BRIDGE_TOKEN_ACCOUNT: &str = "pairingToken";
 
 #[derive(Debug)]
 pub enum KeychainVaultError {
@@ -58,27 +63,32 @@ impl KeychainVault {
         Ok(())
     }
 
-    /// Stores the shared HMAC-SHA256 / Passkey pairing token used to verify iPhone Face ID assertions.
-    pub fn save_faceid_pairing_secret(secret: &str) -> Result<(), KeychainVaultError> {
-        set_generic_password(FACEID_BRIDGE_SERVICE, FACEID_HMAC_ACCOUNT, secret.as_bytes())
-            .map_err(|e| KeychainVaultError::SecurityFramework(e.to_string()))
-    }
-
-    /// Retrieves the iPhone Face ID pairing secret from the Keychain, or generates a default pairing secret.
-    pub fn get_or_create_faceid_pairing_secret() -> String {
-        if let Ok(bytes) = get_generic_password(FACEID_BRIDGE_SERVICE, FACEID_HMAC_ACCOUNT) {
-            if let Ok(s) = String::from_utf8(bytes) {
-                if !s.is_empty() {
-                    return s;
+    /// Returns the per-install pairing token every fill request must present. It is read from
+    /// the Keychain item shared with the AuraSense app, or created from 32 random bytes.
+    /// Fails (rather than falling back to a guessable value) if no random bytes are available.
+    pub fn get_or_create_pairing_token() -> Result<String, KeychainVaultError> {
+        if let Ok(bytes) = get_generic_password(BRIDGE_TOKEN_SERVICE, BRIDGE_TOKEN_ACCOUNT) {
+            if let Ok(token) = String::from_utf8(bytes) {
+                if is_well_formed_token(&token) {
+                    return Ok(token);
                 }
             }
         }
-        let generated = "aura-faceid-hmac-v1-key-9f8e7d6c5b4a";
-        let _ = set_generic_password(
-            FACEID_BRIDGE_SERVICE,
-            FACEID_HMAC_ACCOUNT,
-            generated.as_bytes(),
-        );
-        generated.to_string()
+
+        let mut random = [0u8; 32];
+        File::open("/dev/urandom")
+            .and_then(|mut f| f.read_exact(&mut random))
+            .map_err(|e| KeychainVaultError::SecurityFramework(format!("no random source: {}", e)))?;
+        let token = URL_SAFE_NO_PAD.encode(random);
+        set_generic_password(BRIDGE_TOKEN_SERVICE, BRIDGE_TOKEN_ACCOUNT, token.as_bytes())
+            .map_err(|e| KeychainVaultError::SecurityFramework(e.to_string()))?;
+        Ok(token)
     }
+}
+
+fn is_well_formed_token(token: &str) -> bool {
+    token.len() >= 43
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }

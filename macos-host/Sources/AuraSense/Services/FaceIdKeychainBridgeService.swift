@@ -50,7 +50,8 @@ public final class FaceIdKeychainBridgeService: ObservableObject {
     @Published public private(set) var isClamshellClosed: Bool = false
     @Published public private(set) var activePromptProcess: String? = nil
     @Published public private(set) var isSecureTextFieldFocused: Bool = false
-    @Published public private(set) var localLanIPAddress: String = "192.168.1.8"
+    /// This Mac's current LAN address, re-read periodically (it changes with the network).
+    @Published public private(set) var localLanIPAddress: String = "127.0.0.1"
     @Published public private(set) var lastBridgeEvent: String = "Ready — waiting for a tokenized request from your iPhone"
     /// Continuity "unlocked" state of the bound device only.
     @Published public private(set) var continuityFaceIdUnlocked: Bool = false
@@ -65,6 +66,7 @@ public final class FaceIdKeychainBridgeService: ObservableObject {
     private var listenerRetryAttempt = 0
     private var lastAutoFillTime: Date = .distantPast
     private var continuityUnlockedByPeripheral: [UUID: Bool] = [:]
+    private var lanAddressRefreshTicks = 0
 
     /// Reused system-wide AX element with a short messaging timeout so a hung frontmost app
     /// cannot stall the main actor for the default ~6 s per call.
@@ -206,6 +208,13 @@ public final class FaceIdKeychainBridgeService: ObservableObject {
     }
 
     public func refreshDisplayAndPromptState() {
+        // The pairing URL shown in the app must follow Wi-Fi / network changes.
+        lanAddressRefreshTicks += 1
+        if lanAddressRefreshTicks >= 10 {
+            lanAddressRefreshTicks = 0
+            resolveLocalIPAddress()
+        }
+
         var displayCount: UInt32 = 0
         var activeIDs = [CGDirectDisplayID](repeating: 0, count: 16)
         if CGGetActiveDisplayList(16, &activeIDs, &displayCount) == .success {
@@ -693,28 +702,37 @@ public final class FaceIdKeychainBridgeService: ObservableObject {
         conn.send(content: payload, completion: .contentProcessed { _ in conn.cancel() })
     }
 
+    /// Finds this Mac's IPv4 address on the local network. Wi-Fi / Ethernet (`en*`) wins over
+    /// VPN and virtual interfaces; with no network at all it falls back to the loopback address
+    /// instead of showing a made-up LAN address.
     private func resolveLocalIPAddress() {
-        var address = "192.168.1.8"
+        var preferred: String?
+        var fallback: String?
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
         if getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr {
             for ptr in sequence(first: firstAddr, next: { $0.pointee.ifa_next }) {
+                guard let addrPointer = ptr.pointee.ifa_addr else { continue }
                 let flags = Int32(ptr.pointee.ifa_flags)
-                let addr = ptr.pointee.ifa_addr.pointee
+                let addr = addrPointer.pointee
                 if (flags & (IFF_UP | IFF_RUNNING | IFF_LOOPBACK)) == (IFF_UP | IFF_RUNNING),
                    addr.sa_family == UInt8(AF_INET) {
                     var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                    if getnameinfo(ptr.pointee.ifa_addr, socklen_t(addr.sa_len), &hostname, socklen_t(hostname.count), nil, 0, NI_NUMERICHOST) == 0 {
+                    if getnameinfo(addrPointer, socklen_t(addr.sa_len), &hostname, socklen_t(hostname.count), nil, 0, NI_NUMERICHOST) == 0 {
                         let candidate = String(cString: hostname)
-                        if !candidate.hasPrefix("169.254") {
-                            address = candidate
+                        guard !candidate.hasPrefix("169.254") else { continue }
+                        let interfaceName = String(cString: ptr.pointee.ifa_name)
+                        if interfaceName.hasPrefix("en") {
+                            preferred = candidate
                             break
+                        } else if fallback == nil {
+                            fallback = candidate
                         }
                     }
                 }
             }
             freeifaddrs(ifaddr)
         }
-        localLanIPAddress = address
+        setIfChanged(\.localLanIPAddress, preferred ?? fallback ?? "127.0.0.1")
     }
 
     // MARK: - Pages
@@ -752,7 +770,7 @@ public final class FaceIdKeychainBridgeService: ObservableObject {
         <meta charset="utf-8"/>
         <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
         <meta name="referrer" content="no-referrer"/>
-        <title>AuraSense v1.1</title>
+        <title>AuraSense</title>
         <style>
           :root { color-scheme: dark; }
           * { box-sizing: border-box; }
