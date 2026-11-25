@@ -418,9 +418,14 @@ public struct AuraSenseApp: App {
                 Text("Settings are available in AuraSense after installation.")
                     .padding(24)
             } else {
-                SecuritySettingsView()
-                    .frame(width: 680, height: 560)
-                    .preferredColorScheme(.dark)
+                TabView {
+                    UnlockExperienceView()
+                        .tabItem { Label("Sound & Animation", systemImage: "speaker.wave.2") }
+                    FaceIdKeychainBridgeView()
+                        .tabItem { Label("iPhone Auto-Fill", systemImage: "iphone") }
+                }
+                .frame(width: 680, height: 560)
+                .preferredColorScheme(.dark)
             }
         }
     }

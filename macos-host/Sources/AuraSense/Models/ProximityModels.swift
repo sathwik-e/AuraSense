@@ -196,15 +196,15 @@ public enum ProximityState: Equatable {
     public var title: String {
         switch self {
         case .unconfigured:
-            return "No Aura Device Bound"
+            return "No device selected"
         case .paused(let reason):
-            return "Protection Paused (\(reason))"
+            return "Paused"
         case .unlockedInRange:
-            return "Within Aura • Unlocked"
+            return "Nearby · Unlocked"
         case .gracePeriodCountdown(let remaining, _):
-            return "Leaving Aura • Locking in \(remaining)s"
+            return "Locking in \(remaining)s"
         case .lockedOutOfRange:
-            return "Outside Aura • Mac Locked"
+            return "Away · Locked"
         }
     }
 
@@ -279,19 +279,19 @@ public enum ProximityPreset: String, CaseIterable, Identifiable {
 
     public var lockRSSI: Double {
         switch self {
-        case .deskTight: return -68
-        case .standardOffice: return -78
-        case .studioRoom: return -85
-        case .custom: return -78
+        case .deskTight: return -74
+        case .standardOffice: return -82
+        case .studioRoom: return -90
+        case .custom: return -82
         }
     }
 
     public var gracePeriod: Double {
         switch self {
-        case .deskTight: return 5
-        case .standardOffice: return 8
-        case .studioRoom: return 12
-        case .custom: return 8
+        case .deskTight: return 10
+        case .standardOffice: return 15
+        case .studioRoom: return 20
+        case .custom: return 15
         }
     }
 

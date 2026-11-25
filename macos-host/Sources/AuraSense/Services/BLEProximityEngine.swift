@@ -2,6 +2,7 @@ import Foundation
 import CoreBluetooth
 import SwiftUI
 import ServiceManagement
+import CoreGraphics
 
 /// Core Bluetooth Low Energy proximity engine that discovers nearby BLE peripherals,
 /// tracks the bound Aura device's RSSI using a 1D Kalman + EMA filter, runs the 10-second
@@ -47,9 +48,13 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
     @AppStorage("aurasense.hasNotedDeskRSSI") public var hasNotedDeskRSSI: Bool = false
     @AppStorage("aurasense.notedDeskJitterDB") public var notedDeskJitterDB: Double = 2.1
 
-    @AppStorage("aurasense.lockGracePeriodSeconds") public var lockGracePeriodSeconds: Double = 8.0
+    @AppStorage("aurasense.lockGracePeriodSeconds") public var lockGracePeriodSeconds: Double = 15.0
     @AppStorage("aurasense.unlockCooldownSeconds") public var unlockCooldownSeconds: Double = 5.0
-    @AppStorage("aurasense.signalLossTimeoutSeconds") public var signalLossTimeoutSeconds: Double = 15.0
+    @AppStorage("aurasense.signalLossTimeoutSeconds") public var signalLossTimeoutSeconds: Double = 30.0
+    /// Never auto-lock while the keyboard, mouse or trackpad was used within this many seconds.
+    /// A phone on a bed or in a pocket can read far weaker than on the desk; if you are typing, you are here.
+    @AppStorage("aurasense.lockOnlyWhenIdle") public var lockOnlyWhenIdle: Bool = true
+    public static let activityGuardSeconds: Double = 20.0
     @AppStorage("aurasense.smoothingFactor") public var smoothingFactor: Double = 0.32
     @AppStorage("aurasense.autoUnlockEnabled") public var autoUnlockEnabled: Bool = true
     @AppStorage("aurasense.autoLockEnabled") public var autoLockEnabled: Bool = true {
@@ -180,11 +185,34 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
             CBCentralManagerOptionShowPowerAlertKey: true
         ])
         centralManager.delegate = self
+        migrateTimingDefaultsIfNeeded()
         loadTrustedBinding()
         syncLaunchAtLoginStatus()
         observeSystemNotifications()
         startTimers()
         evaluateProximityState()
+    }
+
+    /// v1.3: older builds locked after 8s of weak signal / 15s of silence, which locked people out
+    /// while working with the phone on a bed or sofa. Raise stored values once to the safer floor.
+    private func migrateTimingDefaultsIfNeeded() {
+        let key = "aurasense.v13.migratedTimings"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        if lockGracePeriodSeconds < 15 { lockGracePeriodSeconds = 15 }
+        if signalLossTimeoutSeconds < 30 { signalLossTimeoutSeconds = 30 }
+        if unlockThresholdRSSI - lockThresholdRSSI < 14 { lockThresholdRSSI = unlockThresholdRSSI - 14 }
+        UserDefaults.standard.set(true, forKey: key)
+    }
+
+    /// Seconds since the last keyboard, mouse or trackpad event in this login session.
+    public var secondsSinceUserInput: Double {
+        let anyEvent = CGEventType(rawValue: ~0) ?? .null
+        return CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: anyEvent)
+    }
+
+    /// True while someone is actively using the Mac, so auto-lock must wait.
+    public var userIsActive: Bool {
+        lockOnlyWhenIdle && secondsSinceUserInput < Self.activityGuardSeconds
     }
 
     // MARK: - Tamper-Resistant Binding
@@ -375,7 +403,7 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
         // - Unlock Threshold: 5 dB (or 1.8σ) below desk median so placing the device anywhere on the desk unlocks reliably
         // - Lock Threshold: 13 dB (or 3.5σ) below Unlock Threshold so sitting at the desk never false-locks
         let unlockMargin = min(max(1.8 * stdDev, 4.0), 8.0)
-        let hysteresisGap = min(max(3.5 * stdDev, 11.0), 18.0)
+        let hysteresisGap = min(max(4.0 * stdDev, 16.0), 22.0)
 
         let optimizedUnlock = min(max((median - unlockMargin).rounded(), -80.0), -42.0)
         let optimizedLock = min(max((optimizedUnlock - hysteresisGap).rounded(), -94.0), optimizedUnlock - 8.0)
@@ -386,13 +414,13 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
         // Optimize Kalman/EMA smoothing & Grace Period based on measured desk wireless jitter
         if stdDev > 3.8 {
             smoothingFactor = 0.22
-            lockGracePeriodSeconds = 10.0
+            lockGracePeriodSeconds = 20.0
         } else if stdDev > 2.2 {
             smoothingFactor = 0.30
-            lockGracePeriodSeconds = 8.0
+            lockGracePeriodSeconds = 15.0
         } else {
             smoothingFactor = 0.38
-            lockGracePeriodSeconds = 6.0
+            lockGracePeriodSeconds = 12.0
         }
 
         if playSoundEffects {
@@ -1349,6 +1377,17 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
         if let dev = boundRecord, !boundSignalLost, isFresh(dev), dev.smoothedRSSI >= unlockThresholdRSSI {
             cancelGracePeriod(reason: "Returned within Aura (\(Int(dev.smoothedRSSI)) dBm)")
             evaluateProximityState()
+            return
+        }
+
+        if userIsActive {
+            // Someone is typing or moving the mouse: they are at the Mac, whatever the radio says.
+            // Restart the countdown so the lock only happens after a full idle grace period.
+            graceRemainingSeconds = max(Int(lockGracePeriodSeconds.rounded()), 1)
+            proximityState = .gracePeriodCountdown(
+                remainingSeconds: graceRemainingSeconds,
+                currentRSSI: Int((boundRecord?.smoothedRSSI ?? lockThresholdRSSI).rounded())
+            )
             return
         }
 

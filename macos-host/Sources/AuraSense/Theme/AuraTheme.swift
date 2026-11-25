@@ -49,7 +49,7 @@ public enum AuraTheme {
 
     /// Marketing version from Info.plist, so the UI never shows a stale hard-coded number.
     public static var appVersion: String {
-        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.2"
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.3"
     }
 
     public static var auraLinearGradient: LinearGradient {

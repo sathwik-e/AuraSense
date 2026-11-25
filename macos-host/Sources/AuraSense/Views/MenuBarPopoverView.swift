@@ -17,18 +17,11 @@ public struct MenuBarPopoverView: View {
         VStack(alignment: .leading, spacing: 12) {
             // Top Header with Eclipse Logo & Λ U R Λ S E N S E Typography
             HStack(spacing: 12) {
-                AuraEclipseLogoView(size: 38)
+                AuraEclipseLogoView(size: 28)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        AuraBrandWordmarkView(size: 12.5, tracking: 2.0)
-                        if lockController.hasExternalMonitorConnected {
-                            Image(systemName: "display.2")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(AuraTheme.cyanGlow)
-                                .help("External Monitor Connected — Display Input Wake Active")
-                        }
-                    }
+                    Text("AuraSense")
+                        .font(.system(size: 13, weight: .semibold))
                     Text(engine.proximityState.title)
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(stateColor)
@@ -85,57 +78,6 @@ public struct MenuBarPopoverView: View {
                 )
             }
 
-            // 10-Second Desk Calibration Quick Bar
-            if engine.isCalibratingDeskSignal {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("Scanning Desk Signal…")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(AuraTheme.cyanGlow)
-                        Spacer()
-                        Text("\(engine.deskCalibrationRemainingSeconds)s")
-                            .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    }
-                    ProgressView(value: engine.deskCalibrationProgress, total: 1.0)
-                        .tint(AuraTheme.cyanGlow)
-                }
-                .padding(8)
-                .background(RoundedRectangle(cornerRadius: 8).fill(AuraTheme.cyanGlow.opacity(0.10)))
-            } else {
-                Button {
-                    engine.startTenSecondDeskCalibration()
-                } label: {
-                    HStack {
-                        Image(systemName: "scope")
-                        Text(engine.hasNotedDeskRSSI ? "Recalibrate Desk Signal" : "Calibrate Desk Signal")
-                        Spacer()
-                        Text("10s")
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-
-            // Instant Keychain Fill Actions
-            HStack(spacing: 8) {
-                Button {
-                    Task { @MainActor in
-                        // Hide AuraSense first so focus returns to the app that owns the prompt.
-                        await lockController.instantFillAfterReturningFocus()
-                    }
-                } label: {
-                    Label("Fill Password", systemImage: "key.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(AuraTheme.indigoGlow)
-                .controlSize(.small)
-                .help("Type your Keychain password into the active macOS system password prompt (⌃⌥⌘Space)")
-            }
-
             // Quick Lock & Pause Grid
             HStack(spacing: 8) {
                 Button {
@@ -180,21 +122,7 @@ public struct MenuBarPopoverView: View {
                     WindowRouter.shared.showDashboard()
                 } label: {
                     HStack {
-                        Label("Open AuraSense Dashboard…", systemImage: "macwindow")
-                        Spacer()
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 4)
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    NSApplication.shared.setActivationPolicy(.regular)
-                    NSApplication.shared.activate(ignoringOtherApps: true)
-                    openWindow(id: "installer-wizard")
-                } label: {
-                    HStack {
-                        Label("Guided Setup…", systemImage: "slider.horizontal.3")
+                        Label("Open AuraSense…", systemImage: "macwindow")
                         Spacer()
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -248,7 +176,7 @@ public struct MenuBarPopoverView: View {
             }
         }
         .padding(16)
-        .frame(width: 330)
+        .frame(width: 290)
         .onAppear { WindowRouter.shared.register(openWindow) }
     }
 }

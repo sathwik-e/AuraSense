@@ -10,9 +10,8 @@ public struct ThresholdsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 tenSecondDeskCalibrationCard
-                presetsCard
-                dualThresholdCalibrationCard
                 timingAndFilteringCard
+                dualThresholdCalibrationCard
             }
             .padding(24)
         }
@@ -226,8 +225,17 @@ public struct ThresholdsView: View {
     private var timingAndFilteringCard: some View {
         AuraGlassCard(padding: 20) {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Grace Timers & Signal Smoothing")
-                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                Text("Locking")
+                    .font(.system(size: 16, weight: .semibold))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Don't lock while I'm using the Mac", isOn: $engine.lockOnlyWhenIdle)
+                        .toggleStyle(.switch)
+                        .font(.system(size: 13, weight: .medium))
+                    Text("Waits until the keyboard and mouse have been idle for \(Int(BLEProximityEngine.activityGuardSeconds)) seconds. Stops false locks when your phone is on the bed or in a pocket.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
 
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
@@ -238,7 +246,7 @@ public struct ThresholdsView: View {
                             .font(.system(size: 13, weight: .bold, design: .rounded))
                             .foregroundStyle(AuraTheme.amberGlow)
                     }
-                    Slider(value: $engine.lockGracePeriodSeconds, in: 2 ... 45, step: 1)
+                    Slider(value: $engine.lockGracePeriodSeconds, in: 5 ... 60, step: 1)
                         .tint(AuraTheme.amberGlow)
                     Text("Duration your device must remain below the Lock Threshold before macOS locks the screen.")
                         .font(.system(size: 11))
@@ -253,27 +261,12 @@ public struct ThresholdsView: View {
                         Text("\(Int(engine.signalLossTimeoutSeconds)) seconds")
                             .font(.system(size: 13, weight: .bold, design: .rounded))
                     }
-                    Slider(value: $engine.signalLossTimeoutSeconds, in: 6 ... 60, step: 1)
+                    Slider(value: $engine.signalLossTimeoutSeconds, in: 15 ... 90, step: 1)
                     Text("If no BLE packet is received from your device for this duration, AuraSense treats it as out of range.")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
 
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("Signal Smoothing")
-                            .font(.system(size: 13, weight: .medium))
-                        Spacer()
-                        Text(String(format: "α = %.2f", engine.smoothingFactor))
-                            .font(.system(size: 13, weight: .bold, design: .monospaced))
-                            .foregroundStyle(AuraTheme.cyanGlow)
-                    }
-                    Slider(value: $engine.smoothingFactor, in: 0.10 ... 0.80, step: 0.05)
-                        .tint(AuraTheme.cyanGlow)
-                    Text("Automatically tuned during the 10-second Desk Signal Calibration based on wireless reflections.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
             }
         }
     }
