@@ -124,6 +124,17 @@ public final class WindowRouter {
         return suppressInitialWindow
     }
 
+    /// Posted with a `DashboardSection` raw value as the object to switch the dashboard page.
+    public static let showSectionNotification = Notification.Name("com.aurasense.mac.showSection")
+    /// Page to show when the dashboard window next appears (it may not exist yet).
+    public var pendingSection: DashboardSection?
+
+    public func showDashboard(section: DashboardSection) {
+        pendingSection = section
+        showDashboard()
+        NotificationCenter.default.post(name: Self.showSectionNotification, object: section.rawValue)
+    }
+
     public func showDashboard() {
         DockVisibilityManager.shared.showAppInForeground()
         let hasDashboard = NSApplication.shared.windows.contains { win in
@@ -183,6 +194,7 @@ public final class AuraSenseAppDelegate: NSObject, NSApplicationDelegate {
             }
             _ = UnlockCelebrationCoordinator.shared
             _ = UnlockSoundLibrary.shared
+            UpdateManager.shared.start()
         }
 
         _ = FaceIdKeychainBridgeService.shared
@@ -383,6 +395,15 @@ public struct AuraSenseApp: App {
         .defaultSize(width: 1080, height: 720)
         .commands {
             CommandGroup(replacing: .newItem) {}
+            CommandGroup(after: .appInfo) {
+                if !launchedAsInstaller {
+                    Button("Check for Updates…") {
+                        Task { @MainActor in
+                            await UpdateManager.shared.checkForUpdates(userInitiated: true)
+                        }
+                    }
+                }
+            }
             CommandMenu("Aura Protection") {
                 if !launchedAsInstaller {
                     AuraProtectionCommandItems()
@@ -423,6 +444,8 @@ public struct AuraSenseApp: App {
                         .tabItem { Label("Sound & Animation", systemImage: "speaker.wave.2") }
                     FaceIdKeychainBridgeView()
                         .tabItem { Label("iPhone Auto-Fill", systemImage: "iphone") }
+                    UpdatesSettingsView()
+                        .tabItem { Label("Updates", systemImage: "arrow.down.circle") }
                 }
                 .frame(width: 680, height: 560)
                 .preferredColorScheme(.dark)

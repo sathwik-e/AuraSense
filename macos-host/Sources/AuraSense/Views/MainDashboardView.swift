@@ -27,7 +27,7 @@ public struct MainDashboardView: View {
     @AuraState private var selectedSection: DashboardSection = .radar
     /// Setup takes over the window only until it has been finished once (or when asked for).
     /// Later gaps (a permission revoked by an update, a missing password) show the banner instead.
-    @AuraState private var showGuidedSetupWizard: Bool = !BLEProximityEngine.shared.hasCompletedOnboarding || AuraLaunchMode.requestedGuidedSetup
+    @AuraState private var showGuidedSetupWizard: Bool = !BLEProximityEngine.shared.hasCompletedOnboarding || !BLEProximityEngine.shared.hasNotedDeskRSSI || AuraLaunchMode.requestedGuidedSetup
     /// Cached so `body` never queries the Keychain; refreshed on KeychainManager change notifications.
     @AuraState private var hasStoredPassword: Bool = KeychainManager.shared.hasStoredPassword()
 
@@ -56,9 +56,19 @@ public struct MainDashboardView: View {
                 return
             }
             hasStoredPassword = KeychainManager.shared.hasStoredPassword()
+            if let section = WindowRouter.shared.pendingSection {
+                selectedSection = section
+                WindowRouter.shared.pendingSection = nil
+            }
             // `--setup` (installer hand-off) always opens Guided Setup once.
-            if WindowRouter.shared.consumeGuidedSetupRequest() || !engine.hasCompletedOnboarding {
+            if WindowRouter.shared.consumeGuidedSetupRequest() || !engine.hasCompletedOnboarding || !engine.hasNotedDeskRSSI {
                 showGuidedSetupWizard = true
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: WindowRouter.showSectionNotification)) { note in
+            if let raw = note.object as? String, let section = DashboardSection(rawValue: raw) {
+                selectedSection = section
+                WindowRouter.shared.pendingSection = nil
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: KeychainManager.passwordDidChangeNotification)) { _ in

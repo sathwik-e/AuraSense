@@ -6,6 +6,12 @@
 - **Longer, safer timings.** Grace period 8 s → 15 s, signal-loss timeout 15 s → 30 s, and at least 14 dB between the unlock and lock thresholds. Existing installs are moved up to these values once.
 - Desk calibration and presets use the wider gap and longer grace periods.
 
+## New
+
+- **Desk calibration is required on first launch.** Setup won't finish until the 10-second desk scan has run, because it sets the lock and unlock levels for your room.
+- **"Did you change your password?"** If macOS rejects the saved password, AuraSense asks once you're back at your Mac. **Yes** opens the Password page so you can save the new one.
+- **Automatic updates.** AuraSense checks GitHub Releases once a day and offers to install new versions. Use **Check for Updates…** in the menu bar panel or the AuraSense menu; turn it off under Settings › Updates.
+
 ## Cleaner interface
 
 - New **Overview** page: status, your device, one signal meter, Lock Now and Pause. The animated radar, simulator and signal chart are gone.
@@ -13,3 +19,7 @@
 - **Sound & Animation** and **iPhone Auto-Fill** moved to Settings (⌘,).
 - Smaller menu bar panel: status, device, Lock Now / Pause, Open, Quit.
 - Plainer status text ("Nearby · Unlocked", "Locking in 12s", "Away · Locked").
+
+## Installer
+
+- Light, minimal disk-image window: one arrow, one caption, and hidden support files stay hidden.

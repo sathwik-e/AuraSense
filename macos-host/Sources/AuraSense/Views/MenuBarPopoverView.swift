@@ -128,6 +128,20 @@ public struct MenuBarPopoverView: View {
                 }
                 .buttonStyle(.plain)
 
+                Button {
+                    Task { @MainActor in
+                        await UpdateManager.shared.checkForUpdates(userInitiated: true)
+                    }
+                } label: {
+                    HStack {
+                        Label("Check for Updates…", systemImage: "arrow.down.circle")
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+
                 Divider()
 
                 Button(role: .destructive) {

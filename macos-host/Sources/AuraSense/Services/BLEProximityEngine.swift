@@ -177,6 +177,9 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
     private var simulatedDeviceID: UUID?
     private var simulatedDevice: BLEDevice?
     private var notificationObservers: [NSObjectProtocol] = []
+    /// Set when the stored password was rejected; the "did you change it?" prompt is shown once
+    /// the user has unlocked the Mac themselves (an alert can't be seen on the lock screen).
+    private var pendingPasswordChangedPrompt = false
 
     private override init() {
         super.init()
@@ -269,6 +272,19 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
     }
 
     private func observeSystemNotifications() {
+        notificationObservers.append(DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name("com.apple.screenIsUnlocked"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.pendingPasswordChangedPrompt else { return }
+                self.pendingPasswordChangedPrompt = false
+                // Let the desktop settle after unlocking before showing the alert.
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                self.showPasswordChangedPrompt()
+            }
+        })
         let center = NotificationCenter.default
         notificationObservers.append(center.addObserver(
             forName: KeychainManager.passwordDidChangeNotification,
@@ -1321,7 +1337,27 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
         evaluateProximityState()
     }
 
+    /// Asks whether the Mac password changed; "Yes" opens the Password page to save the new one.
+    private func showPasswordChangedPrompt() {
+        DockVisibilityManager.shared.showAppInForeground()
+        NSApplication.shared.activate(ignoringOtherApps: true)
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "AuraSense couldn't unlock your Mac"
+        alert.informativeText = "macOS rejected the password saved in AuraSense. Did you change your Mac login password?"
+        alert.addButton(withTitle: "Yes, Update Password")
+        alert.addButton(withTitle: "No")
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            WindowRouter.shared.showDashboard(section: .security)
+        } else if !NSApplication.shared.windows.contains(where: { $0.isVisible && $0.styleMask.contains(.titled) }) {
+            DockVisibilityManager.shared.hideFromDockImmediately()
+        }
+    }
+
     private func recordRejectedPassword(reason: String) {
+        pendingPasswordChangedPrompt = true
         consecutiveUnlockFailures += 1
         if consecutiveUnlockFailures >= Self.maxConsecutiveUnlockFailures {
             autoUnlockSuspended = true

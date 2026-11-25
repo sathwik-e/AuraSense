@@ -154,6 +154,11 @@ public struct InstallerWindowView: View {
         let spokenLabel: String = done ? "Step \(index + 1), \(title), done" : "Step \(index + 1), \(title)"
 
         return Button {
+            // The password step stays locked until the desk calibration is done.
+            guard index <= 2 || deviceReady else {
+                withAnimation(.easeInOut(duration: 0.2)) { currentStep = 2 }
+                return
+            }
             withAnimation(.easeInOut(duration: 0.2)) {
                 currentStep = index
             }
@@ -730,12 +735,18 @@ public struct InstallerWindowView: View {
             Spacer()
 
             if currentStep < Self.lastStepIndex {
-                Button("Finish Later") {
-                    finishSetup()
+                if engine.hasNotedDeskRSSI {
+                    Button("Finish Later") {
+                        finishSetup()
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Close Setup. You can reopen it from the dashboard or the menu bar at any time.")
+                } else if currentStep == 2 {
+                    Text("Run the desk scan to continue")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help("Close Setup. You can reopen it from the dashboard or the menu bar at any time.")
 
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) { currentStep += 1 }
@@ -746,6 +757,7 @@ public struct InstallerWindowView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(AuraTheme.indigoGlow)
                 .keyboardShortcut(.defaultAction)
+                .disabled(currentStep == 2 && !deviceReady)
             } else {
                 Button {
                     finishSetup()
@@ -763,6 +775,11 @@ public struct InstallerWindowView: View {
     /// in the standalone Setup window it closes that window. (Calling `dismiss()` while embedded
     /// would close the dashboard window itself.)
     private func finishSetup() {
+        // Desk calibration is compulsory: it sets the lock and unlock levels for this room.
+        guard engine.hasNotedDeskRSSI, !engine.selectedDeviceID.isEmpty else {
+            withAnimation(.easeInOut(duration: 0.2)) { currentStep = 2 }
+            return
+        }
         if !quickPassword.isEmpty, !saveQuickPassword() {
             // Stay on the password step so the failure is visible.
             withAnimation(.easeInOut(duration: 0.2)) { currentStep = Self.lastStepIndex }
