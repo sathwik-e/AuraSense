@@ -20,16 +20,16 @@ public struct ThresholdsView: View {
     // MARK: - 10-Second Desk Signal Calibration Card
 
     private var tenSecondDeskCalibrationCard: some View {
-        AuraGlassCard(padding: 20, borderColor: AuraTheme.cyanGlow.opacity(0.45)) {
+        AuraGlassCard(padding: 20, borderColor: Color.primary.opacity(0.07)) {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(spacing: 14) {
                     ZStack {
                         Circle()
-                            .fill(AuraTheme.cyanGlow.opacity(0.18))
+                            .fill(Color.primary.opacity(0.06))
                             .frame(width: 48, height: 48)
                         Image(systemName: engine.isCalibratingDeskSignal ? "dot.radiowaves.up.forward" : "scope")
                             .font(.system(size: 22, weight: .semibold))
-                            .foregroundStyle(AuraTheme.cyanGlow)
+                            .foregroundStyle(.secondary)
                     }
 
                     VStack(alignment: .leading, spacing: 3) {
@@ -66,18 +66,16 @@ public struct ThresholdsView: View {
                                 .padding(.horizontal, 6)
                         }
                         .buttonStyle(.borderedProminent)
-                        .tint(AuraTheme.cyanGlow)
                     }
                 }
 
                 if engine.isCalibratingDeskSignal {
                     VStack(alignment: .leading, spacing: 6) {
                         ProgressView(value: engine.deskCalibrationProgress, total: 1.0)
-                            .tint(AuraTheme.cyanGlow)
                         HStack {
                             Text("Sampling desk RSSI & multipath reflections… (\(engine.deskCalibrationSamplesCollected) samples captured)")
                                 .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(AuraTheme.cyanGlow)
+                                .foregroundStyle(.secondary)
                             Spacer()
                             Text("\(engine.deskCalibrationRemainingSeconds)s remaining")
                                 .font(.system(size: 11, weight: .bold, design: .monospaced))
@@ -85,7 +83,7 @@ public struct ThresholdsView: View {
                         }
                     }
                     .padding(10)
-                    .background(RoundedRectangle(cornerRadius: 10).fill(AuraTheme.cyanGlow.opacity(0.08)))
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.06)))
                 }
             }
         }
@@ -120,7 +118,7 @@ public struct ThresholdsView: View {
                                     Spacer()
                                     if isMatched {
                                         Image(systemName: "checkmark.circle.fill")
-                                            .foregroundStyle(AuraTheme.emeraldGlow)
+                                            .foregroundStyle(.secondary)
                                     }
                                 }
                                 Text(preset.description)
@@ -131,10 +129,10 @@ public struct ThresholdsView: View {
                                 Divider()
                                 HStack {
                                     Text("Unlock ≥ \(Int(preset.unlockRSSI)) dBm")
-                                        .foregroundStyle(AuraTheme.emeraldGlow)
+                                        .foregroundStyle(.secondary)
                                     Spacer()
                                     Text("Lock ≤ \(Int(preset.lockRSSI)) dBm")
-                                        .foregroundStyle(AuraTheme.crimsonGlow)
+                                        .foregroundStyle(.secondary)
                                 }
                                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
                             }
@@ -184,14 +182,13 @@ public struct ThresholdsView: View {
                     HStack {
                         Label("Unlock Aura Threshold (Approach)", systemImage: "lock.open.fill")
                             .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(AuraTheme.emeraldGlow)
+                            .foregroundStyle(.secondary)
                         Spacer()
                         Text("\(Int(engine.unlockThresholdRSSI)) dBm")
                             .font(.system(size: 14, weight: .bold, design: .monospaced))
-                            .foregroundStyle(AuraTheme.emeraldGlow)
+                            .foregroundStyle(.secondary)
                     }
                     Slider(value: $engine.unlockThresholdRSSI, in: -82 ... -42, step: 1)
-                        .tint(AuraTheme.emeraldGlow)
                     Text("Mac wakes external monitor input and unlocks via Accessibility when smoothed RSSI rises to or above \(Int(engine.unlockThresholdRSSI)) dBm.")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
@@ -204,14 +201,13 @@ public struct ThresholdsView: View {
                     HStack {
                         Label("Auto-Lock Boundary (Departure)", systemImage: "lock.fill")
                             .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(AuraTheme.crimsonGlow)
+                            .foregroundStyle(.secondary)
                         Spacer()
                         Text("\(Int(engine.lockThresholdRSSI)) dBm")
                             .font(.system(size: 14, weight: .bold, design: .monospaced))
-                            .foregroundStyle(AuraTheme.crimsonGlow)
+                            .foregroundStyle(.secondary)
                     }
                     Slider(value: $engine.lockThresholdRSSI, in: -95 ... -50, step: 1)
-                        .tint(AuraTheme.crimsonGlow)
                     Text("Departure grace countdown begins when smoothed RSSI drops to or below \(Int(engine.lockThresholdRSSI)) dBm.")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
@@ -244,10 +240,9 @@ public struct ThresholdsView: View {
                         Spacer()
                         Text("\(Int(engine.lockGracePeriodSeconds)) seconds")
                             .font(.system(size: 13, weight: .bold, design: .rounded))
-                            .foregroundStyle(AuraTheme.amberGlow)
+                            .foregroundStyle(.secondary)
                     }
                     Slider(value: $engine.lockGracePeriodSeconds, in: 5 ... 60, step: 1)
-                        .tint(AuraTheme.amberGlow)
                     Text("Duration your device must remain below the Lock Threshold before macOS locks the screen.")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)

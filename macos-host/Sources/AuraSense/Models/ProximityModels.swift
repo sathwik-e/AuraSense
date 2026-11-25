@@ -26,17 +26,7 @@ public enum DeviceCategory: String, Codable, CaseIterable, Identifiable {
         }
     }
 
-    public var accentColor: Color {
-        switch self {
-        case .iPhone: return Color(red: 0.25, green: 0.62, blue: 1.0)
-        case .appleWatch: return Color(red: 0.18, green: 0.85, blue: 0.68)
-        case .airPods: return Color(red: 0.58, green: 0.45, blue: 1.0)
-        case .iPad: return Color(red: 0.40, green: 0.55, blue: 0.98)
-        case .mac: return Color(red: 0.55, green: 0.72, blue: 0.95)
-        case .securityKey: return Color(red: 1.0, green: 0.65, blue: 0.22)
-        case .genericBLE: return Color(red: 0.52, green: 0.60, blue: 0.75)
-        }
-    }
+    public var accentColor: Color { .secondary }
 
     public static func infer(from name: String, manufacturerSummary: String? = nil) -> DeviceCategory {
         let lower = name.lowercased()
@@ -247,13 +237,13 @@ public enum ProximityState: Equatable {
         case .unconfigured:
             return .secondary
         case .paused:
-            return .orange
+            return .secondary
         case .unlockedInRange:
-            return Color(red: 0.16, green: 0.86, blue: 0.66)
+            return .primary
         case .gracePeriodCountdown:
-            return Color(red: 1.0, green: 0.72, blue: 0.20)
+            return Color(nsColor: .systemOrange)
         case .lockedOutOfRange:
-            return Color(red: 0.98, green: 0.34, blue: 0.44)
+            return .secondary
         }
     }
 }
@@ -335,14 +325,9 @@ public struct ActivityLogEntry: Identifiable, Codable, Equatable {
 
         public var tintColor: Color {
             switch self {
-            case .unlocked: return Color(red: 0.16, green: 0.86, blue: 0.66)
-            case .locked: return Color(red: 0.98, green: 0.34, blue: 0.44)
-            case .graceStarted: return .orange
-            case .graceCancelled: return .cyan
-            case .deviceBound: return .indigo
-            case .permission: return .purple
-            case .systemState: return .blue
-            case .diagnostics: return .secondary
+            case .graceStarted: return Color(nsColor: .systemOrange)
+            case .permission: return Color(nsColor: .systemRed)
+            default: return .secondary
             }
         }
     }

@@ -43,7 +43,7 @@ public struct DeviceScannerView: View {
                             AuraStatusPill(
                                 title: engine.bluetoothStateDescription,
                                 symbol: engine.bluetoothState == .poweredOn ? "antenna.radiowaves.left.and.right" : "exclamationmark.triangle.fill",
-                                color: engine.bluetoothState == .poweredOn ? AuraTheme.cyanGlow : .orange
+                                color: engine.bluetoothState == .poweredOn ? Color.secondary : AuraTheme.amberGlow
                             )
                         }
                         Text("Select the iPhone, Apple Watch, AirPods, or BLE security tag that should unlock your Mac when nearby.")
@@ -103,7 +103,7 @@ public struct DeviceScannerView: View {
                     VStack(spacing: 12) {
                         Image(systemName: "dot.radiowaves.left.and.right")
                             .font(.system(size: 36))
-                            .foregroundStyle(AuraTheme.cyanGlow)
+                            .foregroundStyle(.secondary)
                             .symbolEffect(.variableColor.iterative)
                         Text(engine.bluetoothState == .poweredOn ? "Scanning for nearby Bluetooth LE devices…" : engine.bluetoothStateDescription)
                             .font(.system(size: 15, weight: .semibold, design: .rounded))
@@ -125,7 +125,6 @@ public struct DeviceScannerView: View {
                                 engine.isSimulationMode = true
                             }
                             .buttonStyle(.borderedProminent)
-                            .tint(AuraTheme.indigoGlow)
                             #endif
                         }
                         .padding(.top, 4)
@@ -142,7 +141,7 @@ public struct DeviceScannerView: View {
 
     private func deviceRowCard(_ device: BLEDevice) -> some View {
         let isBound = (device.id.uuidString == engine.selectedDeviceID)
-        let borderColor = isBound ? AuraTheme.emeraldGlow.opacity(0.6) : Color.primary.opacity(0.10)
+        let borderColor = isBound ? Color.primary.opacity(0.25) : Color.primary.opacity(0.10)
 
         return AuraGlassCard(padding: 16, borderColor: borderColor) {
             HStack(spacing: 16) {
@@ -203,7 +202,6 @@ public struct DeviceScannerView: View {
                     if isBound {
                         Button("Active Key") {}
                             .buttonStyle(.borderedProminent)
-                            .tint(AuraTheme.emeraldGlow)
                             .disabled(true)
                     } else {
                         Button {
@@ -212,7 +210,6 @@ public struct DeviceScannerView: View {
                             Label(engine.selectedDeviceID.isEmpty ? "Bind as Aura Key" : "Switch to This Key", systemImage: engine.selectedDeviceID.isEmpty ? "key.fill" : "lock.rotation")
                         }
                         .buttonStyle(.borderedProminent)
-                        .tint(AuraTheme.indigoGlow)
                     }
                 }
             }

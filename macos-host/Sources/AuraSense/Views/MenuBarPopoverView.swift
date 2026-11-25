@@ -87,7 +87,6 @@ public struct MenuBarPopoverView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(AuraTheme.crimsonGlow)
                 .controlSize(.small)
 
                 if engine.pauseUntilDate == nil {
@@ -107,7 +106,6 @@ public struct MenuBarPopoverView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(AuraTheme.emeraldGlow)
                     .controlSize(.small)
                 }
             }

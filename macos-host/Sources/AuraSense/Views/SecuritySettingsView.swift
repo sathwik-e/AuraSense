@@ -53,11 +53,11 @@ public struct SecuritySettingsView: View {
                 HStack(spacing: 14) {
                     ZStack {
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill((lockController.isAccessibilityTrusted ? AuraTheme.emeraldGlow : .orange).opacity(0.16))
+                            .fill((lockController.isAccessibilityTrusted ? AuraTheme.emeraldGlow : AuraTheme.amberGlow).opacity(0.16))
                             .frame(width: 42, height: 42)
                         Image(systemName: lockController.isAccessibilityTrusted ? "checkmark.shield.fill" : "hand.raised.fill")
                             .font(.system(size: 20, weight: .semibold))
-                            .foregroundStyle(lockController.isAccessibilityTrusted ? AuraTheme.emeraldGlow : .orange)
+                            .foregroundStyle(lockController.isAccessibilityTrusted ? AuraTheme.emeraldGlow : AuraTheme.amberGlow)
                     }
 
                     VStack(alignment: .leading, spacing: 3) {
@@ -135,7 +135,6 @@ public struct SecuritySettingsView: View {
                         Label("Save to Keychain", systemImage: "lock.doc.fill")
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(AuraTheme.emeraldGlow)
                     .disabled(passwordInput.isEmpty)
 
                     if hasStoredPassword {
@@ -163,7 +162,7 @@ public struct SecuritySettingsView: View {
     // MARK: - Simpler, Non-Fickle Alternatives to Automatic iCloud Keychain Auto-Fill
 
     private var simplerKeychainAlternativesCard: some View {
-        AuraGlassCard(padding: 20, borderColor: AuraTheme.indigoGlow.opacity(0.4)) {
+        AuraGlassCard(padding: 20, borderColor: Color.primary.opacity(0.07)) {
             VStack(alignment: .leading, spacing: 14) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Password Prompts While Unlocked")
@@ -177,7 +176,7 @@ public struct SecuritySettingsView: View {
                 HStack(alignment: .center, spacing: 14) {
                     Image(systemName: "command.square.fill")
                         .font(.system(size: 24))
-                        .foregroundStyle(AuraTheme.cyanGlow)
+                        .foregroundStyle(.secondary)
                         .frame(width: 34)
 
                     VStack(alignment: .leading, spacing: 2) {
@@ -202,7 +201,7 @@ public struct SecuritySettingsView: View {
                 HStack(alignment: .center, spacing: 14) {
                     Image(systemName: "key.radiowaves.forward.fill")
                         .font(.system(size: 24))
-                        .foregroundStyle(AuraTheme.emeraldGlow)
+                        .foregroundStyle(.secondary)
                         .frame(width: 34)
 
                     VStack(alignment: .leading, spacing: 2) {
@@ -214,7 +213,7 @@ public struct SecuritySettingsView: View {
                         if let status = keychainOptimizerStatus {
                             Text(status)
                                 .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(AuraTheme.emeraldGlow)
+                                .foregroundStyle(.secondary)
                         }
                     }
 
@@ -225,7 +224,6 @@ public struct SecuritySettingsView: View {
                         keychainOptimizerStatus = msg
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(AuraTheme.emeraldGlow)
                     .controlSize(.small)
                 }
                 .padding(10)
@@ -235,7 +233,7 @@ public struct SecuritySettingsView: View {
                 HStack(alignment: .center, spacing: 14) {
                     Image(systemName: "applewatch.side.right")
                         .font(.system(size: 24))
-                        .foregroundStyle(AuraTheme.indigoGlow)
+                        .foregroundStyle(.secondary)
                         .frame(width: 34)
 
                     VStack(alignment: .leading, spacing: 2) {

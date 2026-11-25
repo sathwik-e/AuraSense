@@ -40,11 +40,13 @@ public struct AuraState<Value>: DynamicProperty {
 /// deep obsidian void, electric blue to ice-cyan orbit gradients, crescent eclipse corona,
 /// and wide-tracked geometric typography (`Λ U R Λ S E N S E`).
 public enum AuraTheme {
-    public static let cyanGlow = Color(red: 0.22, green: 0.86, blue: 1.00)
-    public static let indigoGlow = Color(red: 0.14, green: 0.44, blue: 0.98)
-    public static let emeraldGlow = Color(red: 0.18, green: 0.92, blue: 0.76)
-    public static let amberGlow = Color(red: 1.0, green: 0.72, blue: 0.22)
-    public static let crimsonGlow = Color(red: 0.98, green: 0.34, blue: 0.46)
+    // Restrained palette: one accent (system blue) for controls, neutral text everywhere else,
+    // and colour reserved for the two states that need attention (locking soon, problems).
+    public static let cyanGlow = Color.accentColor
+    public static let indigoGlow = Color.accentColor
+    public static let emeraldGlow = Color.secondary
+    public static let amberGlow = Color(nsColor: .systemOrange)
+    public static let crimsonGlow = Color(nsColor: .systemRed)
     public static let deepMidnight = Color(red: 0.02, green: 0.04, blue: 0.09)
 
     /// Marketing version from Info.plist, so the UI never shows a stale hard-coded number.
@@ -67,15 +69,15 @@ public enum AuraTheme {
     public static func stateAccentColor(for state: ProximityState) -> Color {
         switch state {
         case .unlockedInRange:
-            return cyanGlow
+            return .primary
         case .gracePeriodCountdown:
             return amberGlow
         case .lockedOutOfRange:
-            return crimsonGlow
+            return .secondary
         case .paused:
-            return .orange
+            return .secondary
         case .unconfigured:
-            return cyanGlow
+            return .secondary
         }
     }
 
@@ -126,16 +128,7 @@ public struct AuraBrandWordmarkView: View {
             Text("SENSE")
                 .font(.system(size: size, weight: .light, design: .default))
                 .tracking(tracking)
-                .foregroundStyle(
-                    LinearGradient(
-                        colors: [
-                            Color(red: 0.28, green: 0.64, blue: 1.0),
-                            Color(red: 0.24, green: 0.90, blue: 1.0)
-                        ],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                )
+                .foregroundStyle(Color.secondary)
         }
     }
 }
@@ -168,7 +161,6 @@ public struct AuraEclipseLogoView: View {
                     )
                 )
                 .frame(width: size, height: size)
-                .shadow(color: AuraTheme.cyanGlow.opacity(0.32), radius: size * 0.16)
 
             Circle()
                 .strokeBorder(
@@ -184,7 +176,6 @@ public struct AuraEclipseLogoView: View {
                     lineWidth: max(size * 0.038, 1.4)
                 )
                 .frame(width: size * 0.80, height: size * 0.80)
-                .shadow(color: AuraTheme.cyanGlow.opacity(0.55), radius: size * 0.08)
 
             Canvas { context, canvasSize in
                 let c = CGPoint(x: canvasSize.width / 2, y: canvasSize.height * (showWordmarkInside ? 0.44 : 0.50))
@@ -226,8 +217,8 @@ public struct AuraGlassCard<Content: View>: View {
 
     public init(
         padding: CGFloat = 18,
-        cornerRadius: CGFloat = 16,
-        borderColor: Color = Color.primary.opacity(0.10),
+        cornerRadius: CGFloat = 12,
+        borderColor: Color = Color.primary.opacity(0.07),
         @ViewBuilder content: () -> Content
     ) {
         self.padding = padding
@@ -241,8 +232,7 @@ public struct AuraGlassCard<Content: View>: View {
             .padding(padding)
             .background(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                    .shadow(color: Color.black.opacity(0.14), radius: 14, x: 0, y: 6)
+                    .fill(Color.primary.opacity(0.045))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)

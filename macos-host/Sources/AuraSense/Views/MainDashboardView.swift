@@ -90,7 +90,7 @@ public struct MainDashboardView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 6) {
                         Circle()
-                            .fill(lockController.isAccessibilityTrusted ? AuraTheme.emeraldGlow : .orange)
+                            .fill(lockController.isAccessibilityTrusted ? Color.secondary : AuraTheme.amberGlow)
                             .frame(width: 8, height: 8)
                         Text(lockController.isAccessibilityTrusted ? "Accessibility granted" : "Accessibility needed")
                             .font(.system(size: 11, weight: .medium))
@@ -139,7 +139,6 @@ public struct MainDashboardView: View {
                                 lockController.promptForAccessibilityPermission(resetStaleEntryIfNeeded: false, openSettingsPane: true)
                             }
                             .buttonStyle(.borderedProminent)
-                            .tint(AuraTheme.indigoGlow)
                             .controlSize(.small)
                         }
 
@@ -153,7 +152,7 @@ public struct MainDashboardView: View {
                     }
                     .padding(.horizontal, 18)
                     .padding(.vertical, 10)
-                    .background(Color.orange.opacity(0.12))
+                    .background(Color.primary.opacity(0.05))
                 }
 
                 Group {
