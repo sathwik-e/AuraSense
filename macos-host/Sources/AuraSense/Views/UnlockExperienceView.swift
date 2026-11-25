@@ -176,7 +176,7 @@ public struct UnlockExperienceView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Unlock Animation")
                             .font(.system(size: 18, weight: .bold, design: .rounded))
-                        Text("A short eclipse animation on every display when AuraSense unlocks your Mac. It never blocks clicks or typing, and it is simplified when Reduce Motion is on.")
+                        Text("Plays on every display when AuraSense unlocks your Mac. It never blocks clicks or typing, and becomes a simple fade when Reduce Motion is on.")
                             .font(.system(size: 13))
                             .foregroundStyle(.secondary)
                     }
@@ -185,6 +185,20 @@ public struct UnlockExperienceView: View {
                         .toggleStyle(.switch)
                         .labelsHidden()
                 }
+
+                HStack(alignment: .top, spacing: 12) {
+                    ForEach(UnlockAnimationStyle.allCases) { style in
+                        AnimationStyleTile(
+                            style: style,
+                            isSelected: celebration.animationStyle == style
+                        ) {
+                            celebration.animationStyle = style
+                            celebration.previewAnimationOnly(style: style)
+                        }
+                    }
+                }
+                .disabled(!celebration.showUnlockAnimation)
+                .opacity(celebration.showUnlockAnimation ? 1 : 0.5)
 
                 Toggle(isOn: $celebration.celebrateManualUnlocks) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -251,6 +265,90 @@ public struct UnlockExperienceView: View {
             }
             .buttonStyle(.bordered)
             .disabled(selection.wrappedValue == SoundOption.none.id)
+        }
+    }
+}
+
+/// One choice in the unlock-animation picker: a still of the animation that plays on hover.
+struct AnimationStyleTile: View {
+    let style: UnlockAnimationStyle
+    let isSelected: Bool
+    let action: () -> Void
+
+    @AuraState private var hoverStart: Date? = nil
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 8) {
+                thumbnail
+                    .frame(height: 96)
+                    .frame(maxWidth: .infinity)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(
+                                isSelected ? Color.accentColor : Color.primary.opacity(0.12),
+                                lineWidth: isSelected ? 2 : 1
+                            )
+                    )
+                    .overlay(alignment: .topTrailing) {
+                        if isSelected {
+                            Image(systemName: "checkmark.circle.fill")
+                                .symbolRenderingMode(.palette)
+                                .foregroundStyle(.white, Color.accentColor)
+                                .font(.system(size: 16))
+                                .padding(6)
+                        }
+                    }
+                    .scaleEffect(hoverStart == nil ? 1 : 1.015)
+                    .animation(.easeOut(duration: 0.18), value: hoverStart == nil)
+
+                Text(style.displayName)
+                    .font(.system(size: 13, weight: .semibold))
+                Text(style.summary)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .top)
+        .onHover { hoverStart = $0 ? Date() : nil }
+        .help("Use \(style.displayName) and preview it")
+        .accessibilityLabel("\(style.displayName) unlock animation")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private var thumbnail: some View {
+        ZStack {
+            LinearGradient(
+                colors: [Color(red: 0.36, green: 0.30, blue: 0.62), Color(red: 0.09, green: 0.15, blue: 0.34)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            if let start = hoverStart, style != .eclipse {
+                TimelineView(.animation) { timeline in
+                    let loop = style.duration + 0.4
+                    UnlockSceneFrame(
+                        style: style,
+                        t: timeline.date.timeIntervalSince(start).truncatingRemainder(dividingBy: loop),
+                        deviceName: nil,
+                        showsCaption: false
+                    )
+                }
+            } else {
+                UnlockSceneFrame(style: style, t: stillTime, deviceName: nil, showsCaption: false)
+            }
+        }
+    }
+
+    /// A representative moment of each animation for the still.
+    private var stillTime: Double {
+        switch style {
+        case .eclipse: return 0
+        case .aperture: return 1.1
+        case .stardust: return 1.2
         }
     }
 }

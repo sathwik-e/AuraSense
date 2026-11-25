@@ -12,6 +12,16 @@ public final class UnlockCelebrationCoordinator: ObservableObject {
 
     @AppStorage("aurasense.showUnlockAnimation") public var showUnlockAnimation: Bool = true
     @AppStorage("aurasense.celebrateManualUnlocks") public var celebrateManualUnlocks: Bool = false
+    @AppStorage("aurasense.unlockAnimationStyle") private var animationStyleID: String = UnlockAnimationStyle.eclipse.rawValue
+
+    /// Which unlock animation plays (Eclipse, Aperture or Stardust).
+    public var animationStyle: UnlockAnimationStyle {
+        get { UnlockAnimationStyle(rawValue: animationStyleID) ?? .eclipse }
+        set {
+            objectWillChange.send()
+            animationStyleID = newValue.rawValue
+        }
+    }
 
     private var pendingAuraUnlockDeadline: Date?
     private var pendingDeviceName: String?
@@ -96,31 +106,40 @@ public final class UnlockCelebrationCoordinator: ObservableObject {
         if showUnlockAnimation || forcePreview {
             // Let the lock screen finish dismissing first.
             DispatchQueue.main.asyncAfter(deadline: .now() + (forcePreview ? 0 : 0.25)) {
-                UnlockAnimationPresenter.shared.present(deviceName: deviceName)
+                UnlockAnimationPresenter.shared.present(deviceName: deviceName, style: self.animationStyle)
             }
         }
     }
 
-    public func previewAnimationOnly() {
-        UnlockAnimationPresenter.shared.present(deviceName: BLEProximityEngine.shared.selectedDeviceName)
+    public func previewAnimationOnly(style: UnlockAnimationStyle? = nil) {
+        UnlockAnimationPresenter.shared.present(
+            deviceName: BLEProximityEngine.shared.selectedDeviceName,
+            style: style ?? animationStyle
+        )
     }
 }
 
-/// Shows a transparent, click-through overlay on every display for ~2 seconds.
+/// Shows a transparent, click-through overlay on every display for about two seconds.
 @MainActor
 public final class UnlockAnimationPresenter {
     public static let shared = UnlockAnimationPresenter()
 
     private var windows: [NSWindow] = []
     private var dismissWorkItem: DispatchWorkItem?
-    private static let totalDuration: TimeInterval = 2.1
 
     private init() {}
 
-    public func present(deviceName: String?) {
+    public func present(deviceName: String?, style: UnlockAnimationStyle = .eclipse) {
         dismiss()
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let mainScreen = NSScreen.main
+        // Reduce Motion always gets the calm Eclipse fade, whichever style is chosen.
+        let effectiveStyle: UnlockAnimationStyle = reduceMotion ? .eclipse : style
+        let duration = effectiveStyle.duration
+        // Build the mote table now so the first frame doesn't stall.
+        if effectiveStyle == .stardust { _ = StardustRenderer.motes.count }
+        // One shared start time keeps every display in step.
+        let start = Date()
 
         for screen in NSScreen.screens {
             let window = NSPanel(
@@ -138,20 +157,29 @@ public final class UnlockAnimationPresenter {
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
             window.setFrame(screen.frame, display: false)
 
-            let view = UnlockAnimationView(
-                deviceName: deviceName,
-                showsCaption: screen == mainScreen,
-                reduceMotion: reduceMotion,
-                duration: Self.totalDuration
-            )
-            window.contentView = NSHostingView(rootView: view)
+            let showsCaption = screen == mainScreen
+            if effectiveStyle == .eclipse {
+                window.contentView = NSHostingView(rootView: UnlockAnimationView(
+                    deviceName: deviceName,
+                    showsCaption: showsCaption,
+                    reduceMotion: reduceMotion,
+                    duration: duration
+                ))
+            } else {
+                window.contentView = NSHostingView(rootView: TimedUnlockScene(
+                    style: effectiveStyle,
+                    start: start,
+                    deviceName: deviceName,
+                    showsCaption: showsCaption
+                ))
+            }
             window.orderFrontRegardless()
             windows.append(window)
         }
 
         let item = DispatchWorkItem { [weak self] in self?.dismiss() }
         dismissWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.totalDuration + 0.1, execute: item)
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.1, execute: item)
     }
 
     public func dismiss() {

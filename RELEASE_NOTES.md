@@ -8,6 +8,7 @@
 
 ## New
 
+- **Two new unlock animations.** Pick one on the **Sound** page: **Aperture**, a camera iris that spins open to reveal your desktop, or **Stardust**, where light spirals into a ring and bursts into sparks. **Eclipse** is still there. Hover a tile to watch it; click to use it and see it full screen.
 - **Desk calibration is required on first launch.** Setup won't finish until the 10-second desk scan has run, because it sets the lock and unlock levels for your room.
 - **"Did you change your password?"** If macOS rejects the saved password, AuraSense asks once you're back at your Mac. **Yes** opens the Password page so you can save the new one.
 - **Automatic updates.** AuraSense checks GitHub Releases once a day and offers to install new versions. Use **Check for Updates…** in the menu bar panel or the AuraSense menu; turn it off under Settings › Updates.
@@ -15,8 +16,8 @@
 ## Cleaner interface
 
 - New **Overview** page: status, your device, one signal meter, Lock Now and Pause. The animated radar, simulator and signal chart are gone.
-- Sidebar cut to five pages: Overview, Device, Range & Locking, Password, Activity.
-- **Sound & Animation** and **iPhone Auto-Fill** moved to Settings (⌘,).
+- Sidebar pages: Overview, Device, Range & Locking, Password, Sound, Activity.
+- **iPhone Auto-Fill** moved to Settings (⌘,).
 - Smaller menu bar panel: status, device, Lock Now / Pause, Open, Quit.
 - Plainer status text ("Nearby · Unlocked", "Locking in 12s", "Away · Locked").
 
