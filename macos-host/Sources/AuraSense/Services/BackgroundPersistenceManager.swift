@@ -37,6 +37,8 @@ public final class BackgroundPersistenceManager: ObservableObject {
     private var powerOffRequestedAt: Date?
     /// The launchd instance replaced a manually opened one, so it must show its UI.
     private var forceVisibleStart = false
+    /// File descriptor holding the single-instance lock, or -1 when this copy doesn't hold it.
+    private var instanceLockFD: Int32 = -1
 
     private init() {
         if UserDefaults.standard.object(forKey: "aurasense.keepRunningInBackground") == nil {
@@ -187,6 +189,11 @@ public final class BackgroundPersistenceManager: ObservableObject {
 
     /// Resolves duplicate instances at launch. Returns `.exitHandedOff` when this process
     /// should exit because another (launchd-managed or current) instance owns protection.
+    ///
+    /// The running-apps list can lag behind a process that started a moment ago, so two copies
+    /// launched together (the LaunchAgent and a manual open) could each miss the other and both
+    /// keep running. An exclusive lock file decides instead: only one copy can hold it, the
+    /// launchd copy always waits for it, and a manually opened copy yields to whoever has it.
     public func coordinateLaunch() -> LaunchDecision {
         let currentPID = ProcessInfo.processInfo.processIdentifier
         let myExecutableDate = Self.executableModificationDate(Bundle.main.executableURL)
@@ -200,40 +207,47 @@ public final class BackgroundPersistenceManager: ObservableObject {
         let peers = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "com.aurasense.mac.app")
             .filter { $0.processIdentifier != currentPID }
 
-        var livePeers: [NSRunningApplication] = []
         for peer in peers {
             // A peer launched before the binary on disk was replaced is a stale build: replace it.
             if let launched = peer.launchDate, let built = myExecutableDate, launched < built {
                 peer.forceTerminate()
                 terminatedStalePIDs.insert(peer.processIdentifier)
-                continue
-            }
-            livePeers.append(peer)
-            guard isMainAppBundle else { continue }
-            if launchedByAgent {
-                // launchd's instance owns protection; ask the manually launched one to step aside
-                // and take over its UI (decided here, not via a racy flag written by the peer).
-                forceVisibleStart = true
-                DistributedNotificationCenter.default().postNotificationName(
-                    Self.requestExitNotification,
-                    object: String(peer.processIdentifier),
-                    userInfo: nil,
-                    deliverImmediately: true
-                )
-            } else {
-                // Someone opened AuraSense while it is already running: show that instance instead.
-                DistributedNotificationCenter.default().postNotificationName(
-                    Self.showDashboardNotification,
-                    object: nil,
-                    userInfo: AuraLaunchMode.requestedGuidedSetup ? ["setup": "1"] : nil,
-                    deliverImmediately: true
-                )
-                return .exitHandedOff
             }
         }
 
+        guard isMainAppBundle else { return .continueLaunching }
+
+        // A stale copy we just terminated releases the lock as it exits.
+        let staleGrace: TimeInterval = terminatedStalePIDs.isEmpty ? 0 : 3
+
+        if launchedByAgent {
+            if acquireInstanceLock(timeout: staleGrace) { return .continueLaunching }
+            // A manually opened copy owns the lock. launchd's instance owns protection, so ask that
+            // copy to step aside and take over its UI. It may still be starting up and not yet
+            // listening, so keep asking until the lock is free.
+            forceVisibleStart = true
+            if acquireInstanceLock(timeout: 8, whileWaiting: { [weak self] in self?.requestManualPeersExit() }) {
+                return .continueLaunching
+            }
+            // It never answered: stop it rather than run two copies.
+            for peer in otherInstances() { peer.forceTerminate() }
+            _ = acquireInstanceLock(timeout: 3)
+            return .continueLaunching
+        }
+
+        guard acquireInstanceLock(timeout: staleGrace) else {
+            // Someone opened AuraSense while it is already running: show that instance instead.
+            DistributedNotificationCenter.default().postNotificationName(
+                Self.showDashboardNotification,
+                object: nil,
+                userInfo: AuraLaunchMode.requestedGuidedSetup ? ["setup": "1"] : nil,
+                deliverImmediately: true
+            )
+            return .exitHandedOff
+        }
+
         // A manual launch from /Applications hands protection to launchd so it is relaunched after force quit.
-        if isMainAppBundle, !launchedByAgent, keepRunningInBackground, isRunningFromApplications, livePeers.isEmpty {
+        if !launchedByAgent, keepRunningInBackground, isRunningFromApplications {
             UserDefaults.standard.set(true, forKey: Self.pendingShowDashboardKey)
             if installOrRefreshAgent(loadNow: true), waitForAgentInstance(timeout: 4.0) {
                 return .exitHandedOff
@@ -251,16 +265,83 @@ public final class BackgroundPersistenceManager: ObservableObject {
         return pending || forceVisibleStart
     }
 
-    private func waitForAgentInstance(timeout: TimeInterval) -> Bool {
-        let currentPID = ProcessInfo.processInfo.processIdentifier
+    // MARK: - Single-Instance Lock
+
+    /// ~/Library/Application Support/AuraSense/instance.lock
+    private static var instanceLockURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
+        return base.appendingPathComponent("AuraSense", isDirectory: true).appendingPathComponent("instance.lock")
+    }
+
+    /// Takes the exclusive instance lock, retrying until `timeout`. The lock is held for the life
+    /// of the process; the system releases it when the process exits, crashes or is killed.
+    /// If the lock file can't be opened at all, this returns true so AuraSense still starts.
+    private func acquireInstanceLock(timeout: TimeInterval, whileWaiting: (() -> Void)? = nil) -> Bool {
+        if instanceLockFD >= 0 { return true }
+        let url = Self.instanceLockURL
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // O_CLOEXEC: helper processes (launchctl, the reopen script) must not inherit the lock.
+        let fd = open(url.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o644)
+        guard fd >= 0 else { return true }
+
         let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            let others = NSRunningApplication.runningApplications(withBundleIdentifier: "com.aurasense.mac.app")
-                .filter { $0.processIdentifier != currentPID && !$0.isTerminated && !terminatedStalePIDs.contains($0.processIdentifier) }
-            if !others.isEmpty { return true }
+        var lastNudge = Date.distantPast
+        while true {
+            if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+                instanceLockFD = fd
+                let pid = "\(ProcessInfo.processInfo.processIdentifier)\n"
+                _ = ftruncate(fd, 0)
+                _ = pid.withCString { write(fd, $0, strlen($0)) }
+                return true
+            }
+            if Date() >= deadline { break }
+            if let whileWaiting, Date().timeIntervalSince(lastNudge) >= 0.5 {
+                whileWaiting()
+                lastNudge = Date()
+            }
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         }
+        close(fd)
         return false
+    }
+
+    /// Other running copies of the main app, excluding ones already terminated as stale.
+    private func otherInstances() -> [NSRunningApplication] {
+        let currentPID = ProcessInfo.processInfo.processIdentifier
+        return NSRunningApplication.runningApplications(withBundleIdentifier: "com.aurasense.mac.app")
+            .filter { $0.processIdentifier != currentPID && !$0.isTerminated && !terminatedStalePIDs.contains($0.processIdentifier) }
+    }
+
+    /// Asks every other copy to exit. Only manually opened copies obey (see `startListening`).
+    private func requestManualPeersExit() {
+        for peer in otherInstances() {
+            DistributedNotificationCenter.default().postNotificationName(
+                Self.requestExitNotification,
+                object: String(peer.processIdentifier),
+                userInfo: nil,
+                deliverImmediately: true
+            )
+        }
+    }
+
+    /// Waits for launchd's instance to come up. While this copy holds the lock, that instance
+    /// keeps asking it to exit, which is the signal. (Any other AuraSense copy seen here could
+    /// be a second manual open that is about to yield, so its presence alone proves nothing.)
+    private func waitForAgentInstance(timeout: TimeInterval) -> Bool {
+        var agentAsked = false
+        let observer = DistributedNotificationCenter.default().addObserver(
+            forName: Self.requestExitNotification,
+            object: String(ProcessInfo.processInfo.processIdentifier),
+            queue: nil
+        ) { _ in agentAsked = true }
+        defer { DistributedNotificationCenter.default().removeObserver(observer) }
+
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline, !agentAsked {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        return agentAsked
     }
 
     /// When the executable on disk last changed. ditto/rename preserve the build mtime, so the

@@ -5,6 +5,7 @@
 - **Doesn't lock while you're using the Mac.** Auto-lock now waits until the keyboard, mouse and trackpad have been idle for 20 seconds. A phone on the bed, in a pocket or behind your body can read 20–30 dB weaker than on the desk; if you are typing, you are there. Turn it off in **Range & Locking** if you want signal-only locking.
 - **Longer, safer timings.** Grace period 8 s → 15 s, signal-loss timeout 15 s → 30 s, and at least 14 dB between the unlock and lock thresholds. Existing installs are moved up to these values once.
 - Desk calibration and presets use the wider gap and longer grace periods.
+- **Only one AuraSense runs at a time.** Opening AuraSense just as it starts at login could leave two copies running, both locking and unlocking the Mac. The login copy now always takes over and the other closes.
 
 ## New
 
