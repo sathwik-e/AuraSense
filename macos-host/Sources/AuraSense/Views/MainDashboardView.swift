@@ -5,6 +5,7 @@ public enum DashboardSection: String, CaseIterable, Identifiable {
     case devices = "Device"
     case thresholds = "Range & Locking"
     case security = "Password"
+    case sound = "Sound"
     case activity = "Activity"
 
     public var id: String { rawValue }
@@ -15,6 +16,7 @@ public enum DashboardSection: String, CaseIterable, Identifiable {
         case .devices: return "iphone"
         case .thresholds: return "slider.horizontal.3"
         case .security: return "key"
+        case .sound: return "speaker.wave.2"
         case .activity: return "list.bullet"
         }
     }
@@ -175,6 +177,8 @@ public struct MainDashboardView: View {
                         ThresholdsView()
                     case .security:
                         SecuritySettingsView()
+                    case .sound:
+                        UnlockExperienceView()
                     case .activity:
                         ActivityLogView()
                     }

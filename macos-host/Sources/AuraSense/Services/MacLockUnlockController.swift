@@ -668,6 +668,7 @@ public final class MacLockUnlockController: ObservableObject {
         for _ in 0..<17 {
             try? await Task.sleep(nanoseconds: 150_000_000)
             if !refreshScreenLockState() {
+                lastAuraSenseUnlockDate = Date()
                 lastActionSummary = "Unlocked via proximity (confirmed by macOS)"
                 return .unlockedSuccessfully
             }
@@ -727,8 +728,14 @@ public final class MacLockUnlockController: ObservableObject {
         _ = await instantFillActivePasswordField()
     }
 
+    /// When AuraSense last unlocked the lock screen itself (proximity unlock or Instant-Fill).
+    /// Changing the trusted device is only allowed shortly after one, proving the current
+    /// device and the saved password still work.
+    public private(set) var lastAuraSenseUnlockDate: Date = .distantPast
+
     @discardableResult
     public func instantFillActivePasswordField() async -> Bool {
+        let wasLocked = refreshScreenLockState()
         let decision = CredentialInjectionGuard.shared.focusedFieldInjectionDecision(requireSecureField: true)
         guard decision.allowed else {
             lastActionSummary = "Instant-Fill blocked: \(decision.reason)"
@@ -758,6 +765,17 @@ public final class MacLockUnlockController: ObservableObject {
 
         if BLEProximityEngine.shared.playSoundEffects {
             UnlockSoundLibrary.shared.play(id: "system:Pop")
+        }
+
+        if wasLocked {
+            // Credit the unlock only once macOS confirms the session opened.
+            for _ in 0..<17 {
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                if !refreshScreenLockState() {
+                    lastAuraSenseUnlockDate = Date()
+                    break
+                }
+            }
         }
 
         lastActionSummary = "Instant-filled password via ⌃⌥⌘Space"

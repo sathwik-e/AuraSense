@@ -513,6 +513,11 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
             return
         }
         let currentName = selectedDeviceName.isEmpty ? "the current device" : selectedDeviceName
+        guard deviceChangeAllowed else {
+            explainDeviceChangeSteps(action: "change the linked device")
+            completion?(false)
+            return
+        }
         MacPasswordAuthorizer.shared.authorize(.changeTrustedDevice(from: currentName, to: device.name)) { [weak self] granted in
             guard let self else { return }
             if granted {
@@ -525,6 +530,41 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
                 )
             }
             completion?(granted)
+        }
+    }
+
+    /// How long after an AuraSense unlock the trusted device may be changed or removed.
+    public static let deviceChangeWindowSeconds: TimeInterval = 120
+
+    /// True for two minutes after AuraSense itself unlocked the Mac (proximity or Instant-Fill).
+    public var deviceChangeAllowed: Bool {
+        Date().timeIntervalSince(MacLockUnlockController.shared.lastAuraSenseUnlockDate) <= Self.deviceChangeWindowSeconds
+    }
+
+    private func explainDeviceChangeSteps(action: String) {
+        appendLog(
+            kind: .permission,
+            title: "Device Change Needs a Fresh AuraSense Unlock",
+            detail: "Lock the Mac, unlock it with AuraSense, then \(action) within 2 minutes."
+        )
+        DockVisibilityManager.shared.showAppInForeground()
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Unlock with AuraSense first"
+        alert.informativeText = """
+        To \(action), prove the current device and saved password still work:
+
+        1. Lock your Mac (Lock Now, or ⌃⌘Q).
+        2. Unlock it with AuraSense: bring \(selectedDeviceName.isEmpty ? "your device" : selectedDeviceName) close, or press ⌃⌥⌘Space at the lock screen to auto-fill.
+        3. Within 2 minutes, come back here and \(action).
+        """
+        alert.addButton(withTitle: "Lock Now")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn {
+            triggerManualLock()
+            // This lock exists to be undone by AuraSense, so let proximity unlock it right away.
+            autoUnlockArmed = true
         }
     }
 
@@ -580,6 +620,11 @@ public final class BLEProximityEngine: NSObject, ObservableObject {
             return
         }
         let name = selectedDeviceName.isEmpty ? "the current device" : selectedDeviceName
+        guard deviceChangeAllowed else {
+            explainDeviceChangeSteps(action: "remove the linked device")
+            completion?(false)
+            return
+        }
         MacPasswordAuthorizer.shared.authorize(.unbindTrustedDevice(name: name)) { [weak self] granted in
             guard let self else { return }
             if granted {

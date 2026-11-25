@@ -9,6 +9,8 @@ public enum ProtectedAction: Equatable {
     case unbindTrustedDevice(name: String)
     case stopAuraSenseCompletely
     case disableBackgroundProtection
+    case changeStoredPassword
+    case removeStoredPassword
 
     var title: String {
         switch self {
@@ -16,6 +18,8 @@ public enum ProtectedAction: Equatable {
         case .unbindTrustedDevice: return "Remove Trusted Device"
         case .stopAuraSenseCompletely: return "Stop AuraSense Completely"
         case .disableBackgroundProtection: return "Turn Off Background Protection"
+        case .changeStoredPassword: return "Change Saved Password"
+        case .removeStoredPassword: return "Remove Saved Password"
         }
     }
 
@@ -29,6 +33,10 @@ public enum ProtectedAction: Equatable {
             return "Quit AuraSense fully. Proximity lock and unlock stop until AuraSense is opened again."
         case .disableBackgroundProtection:
             return "AuraSense will no longer keep running after Quit or relaunch itself if it is closed."
+        case .changeStoredPassword:
+            return "Confirm it's you before replacing the password AuraSense uses to unlock this Mac."
+        case .removeStoredPassword:
+            return "Confirm it's you before removing the password AuraSense uses to unlock this Mac."
         }
     }
 
@@ -38,6 +46,8 @@ public enum ProtectedAction: Equatable {
         case .unbindTrustedDevice: return "Remove Device"
         case .stopAuraSenseCompletely: return "Stop AuraSense"
         case .disableBackgroundProtection: return "Turn Off"
+        case .changeStoredPassword: return "Continue"
+        case .removeStoredPassword: return "Remove Password"
         }
     }
 }

@@ -440,8 +440,6 @@ public struct AuraSenseApp: App {
                     .padding(24)
             } else {
                 TabView {
-                    UnlockExperienceView()
-                        .tabItem { Label("Sound & Animation", systemImage: "speaker.wave.2") }
                     FaceIdKeychainBridgeView()
                         .tabItem { Label("iPhone Auto-Fill", systemImage: "iphone") }
                     UpdatesSettingsView()

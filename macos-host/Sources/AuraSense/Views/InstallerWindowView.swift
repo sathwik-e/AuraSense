@@ -805,6 +805,11 @@ public struct InstallerWindowView: View {
             return false
         }
         guard !quickPassword.isEmpty else { return false }
+        // Replacing an existing password needs re-authentication, which lives on the Password page.
+        guard !KeychainManager.shared.hasStoredPassword() else {
+            passwordSaveError = "A password is already saved. To change it, use the Password page (it asks for your Mac password first)."
+            return false
+        }
         do {
             try KeychainManager.shared.savePassword(quickPassword)
             savedPasswordSuccess = true

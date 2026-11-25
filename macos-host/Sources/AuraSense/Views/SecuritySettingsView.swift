@@ -396,9 +396,31 @@ public struct SecuritySettingsView: View {
 
     // MARK: - Keychain Actions
 
+    /// Replacing a saved password first asks for the Mac password (typed by hand), then checks
+    /// that the new password really is this account's password before storing it.
     private func savePasswordToKeychain() {
+        let candidate = passwordInput
+        guard !candidate.isEmpty else { return }
+        Task { @MainActor in
+            if hasStoredPassword {
+                guard await MacPasswordAuthorizer.shared.authorize(.changeStoredPassword) else {
+                    statusBannerIsError = true
+                    statusBannerText = "Password not changed: your Mac password wasn't confirmed."
+                    return
+                }
+            }
+            guard await MacAccountPasswordVerifier.verify(candidate) else {
+                statusBannerIsError = true
+                statusBannerText = "That isn't this Mac's login password. Nothing was saved."
+                return
+            }
+            commitPasswordToKeychain(candidate)
+        }
+    }
+
+    private func commitPasswordToKeychain(_ candidate: String) {
         do {
-            try KeychainManager.shared.savePassword(passwordInput)
+            try KeychainManager.shared.savePassword(candidate)
             passwordInput = ""
             showPassword = false
             hasStoredPassword = true
@@ -416,6 +438,17 @@ public struct SecuritySettingsView: View {
     }
 
     private func clearPasswordFromKeychain() {
+        Task { @MainActor in
+            guard await MacPasswordAuthorizer.shared.authorize(.removeStoredPassword) else {
+                statusBannerIsError = true
+                statusBannerText = "Password not removed: your Mac password wasn't confirmed."
+                return
+            }
+            commitPasswordRemoval()
+        }
+    }
+
+    private func commitPasswordRemoval() {
         do {
             try KeychainManager.shared.deletePassword()
             passwordInput = ""
