@@ -122,7 +122,7 @@ def write_custom_ds_store(target_path, bg_dir_cnid=16, bg_file_cnid=17):
         'ShowStatusBar': False,
         'ShowTabView': False,
         'ShowToolbar': False,
-        'WindowBounds': '{{200, 160}, {660, 468}}',
+        'WindowBounds': '{{200, 160}, {660, 428}}',
     }
     icvp = {
         'arrangeBy': 'none',
@@ -157,8 +157,8 @@ def write_custom_ds_store(target_path, bg_dir_cnid=16, bg_file_cnid=17):
         ('.', 'vSrn', 'long', struct.pack('>I', 1)),
         ('.VolumeIcon.icns', 'Iloc', 'blob', iloc_payload(900, 900)),
         ('.background', 'Iloc', 'blob', iloc_payload(900, 950)),
-        ('Applications', 'Iloc', 'blob', iloc_payload(485, 220)),
-        ('AuraSense.app', 'Iloc', 'blob', iloc_payload(175, 220)),
+        ('Applications', 'Iloc', 'blob', iloc_payload(490, 190)),
+        ('AuraSense.app', 'Iloc', 'blob', iloc_payload(170, 190)),
         ('Install AuraSense.app', 'Iloc', 'blob', iloc_payload(330, 345)),
     ]
     entries.sort(key=lambda item: (item[0].lower(), item[1]))

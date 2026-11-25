@@ -158,6 +158,17 @@ build_dmg_with_hdiutil() {
         fi
     fi
 
+    # Flag the support files as invisible (Finder hides them unless "show hidden files" is on;
+    # the layout script also parks them outside the window for that case).
+    local hidden_item
+    for hidden_item in .background .fseventsd .VolumeIcon.icns .DS_Store .Trashes; do
+        [[ -e "${MOUNT_POINT}/${hidden_item}" ]] || continue
+        chflags hidden "${MOUNT_POINT}/${hidden_item}" 2>/dev/null || true
+        if command -v SetFile >/dev/null 2>&1; then
+            SetFile -a V "${MOUNT_POINT}/${hidden_item}" 2>/dev/null || true
+        fi
+    done
+
     # Finder can discard .VolumeIcon.icns while laying out the window (the volume is not yet
     # flagged as having a custom icon), so put it back before setting that flag.
     if [[ ! -f "${MOUNT_POINT}/.VolumeIcon.icns" ]]; then

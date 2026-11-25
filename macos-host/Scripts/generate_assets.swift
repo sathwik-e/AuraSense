@@ -336,11 +336,15 @@ func renderMenuBarEclipsePNG(pixelSize: Int, pointSize: Int, variant: MenuBarIco
     return rep
 }
 
-// MARK: - 3. Generate Custom DMG Installer Window Background (660x440 @1x & @2x)
+// MARK: - 3. Generate DMG Installer Window Background (660x400 @1x & @2x)
 
+/// Minimal, light installer artwork in the style of Apple's own disk images: a soft neutral
+/// background, one thin arrow between the two icon slots and a short caption. Finder draws the
+/// icons and their (dark) labels on top, so the background stays light for legibility.
+/// Icon slots (Finder coordinates, from the top-left): app at (170, 190), Applications at (490, 190).
 func renderDMGBackground(scale: CGFloat) -> NSBitmapImageRep {
     let logicalW: CGFloat = 660
-    let logicalH: CGFloat = 440
+    let logicalH: CGFloat = 400
     let pw = Int(logicalW * scale)
     let ph = Int(logicalH * scale)
 
@@ -364,128 +368,47 @@ func renderDMGBackground(scale: CGFloat) -> NSBitmapImageRep {
     cg.scaleBy(x: scale, y: scale)
 
     let colorSpace = CGColorSpaceCreateDeviceRGB()
-
     let bgColors = [
-        CGColor(red: 0.01, green: 0.02, blue: 0.05, alpha: 1.0),
-        CGColor(red: 0.03, green: 0.06, blue: 0.14, alpha: 1.0),
-        CGColor(red: 0.01, green: 0.01, blue: 0.03, alpha: 1.0)
+        CGColor(red: 0.975, green: 0.975, blue: 0.980, alpha: 1.0),
+        CGColor(red: 0.930, green: 0.932, blue: 0.940, alpha: 1.0)
     ] as CFArray
-    let bgGrad = CGGradient(colorsSpace: colorSpace, colors: bgColors, locations: [0.0, 0.5, 1.0])!
+    let bgGrad = CGGradient(colorsSpace: colorSpace, colors: bgColors, locations: [0.0, 1.0])!
     cg.drawLinearGradient(
         bgGrad,
         start: CGPoint(x: 0, y: logicalH),
-        end: CGPoint(x: logicalW, y: 0),
+        end: CGPoint(x: 0, y: 0),
         options: [.drawsBeforeStartLocation, .drawsAfterEndLocation]
     )
 
-    let leftCenter = CGPoint(x: 175, y: logicalH - 220)
-    let rightCenter = CGPoint(x: 485, y: logicalH - 220)
-    let centerPoint = CGPoint(x: 330, y: logicalH - 220)
+    // Arrow between the icon slots (Cocoa y is flipped: 190 from the top).
+    let arrowY = logicalH - 182
+    let startX: CGFloat = 268
+    let endX: CGFloat = 392
+    let shaft = NSBezierPath()
+    shaft.move(to: CGPoint(x: startX, y: arrowY))
+    shaft.line(to: CGPoint(x: endX, y: arrowY))
+    shaft.lineWidth = 1.6
+    shaft.lineCapStyle = .round
+    let head = NSBezierPath()
+    head.move(to: CGPoint(x: endX - 9, y: arrowY + 7))
+    head.line(to: CGPoint(x: endX, y: arrowY))
+    head.line(to: CGPoint(x: endX - 9, y: arrowY - 7))
+    head.lineWidth = 1.6
+    head.lineCapStyle = .round
+    head.lineJoinStyle = .round
+    NSColor(calibratedWhite: 0.0, alpha: 0.28).setStroke()
+    shaft.stroke()
+    head.stroke()
 
-    for idx in 0..<4 {
-        let r = CGFloat(95 + idx * 58)
-        let ringRect = CGRect(x: centerPoint.x - r, y: centerPoint.y - r, width: r * 2, height: r * 2)
-        let ringPath = NSBezierPath(ovalIn: ringRect)
-        ringPath.lineWidth = 1.0
-        NSColor(calibratedRed: 0.20, green: 0.78, blue: 1.0, alpha: CGFloat(0.14 - Double(idx) * 0.028)).setStroke()
-        ringPath.stroke()
-    }
-
-    func drawPedestal(center: CGPoint, borderTint: NSColor, badgeText: String) {
-        let w: CGFloat = 156
-        let h: CGFloat = 166
-        let cardRect = CGRect(x: center.x - w / 2, y: center.y - h / 2 - 6, width: w, height: h)
-        let path = NSBezierPath(roundedRect: cardRect, xRadius: 22, yRadius: 22)
-        NSColor(calibratedRed: 0.04, green: 0.07, blue: 0.15, alpha: 0.78).setFill()
-        path.fill()
-        path.lineWidth = 1.4
-        borderTint.setStroke()
-        path.stroke()
-
-        let pillAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 9.5, weight: .semibold),
-            .foregroundColor: borderTint.withAlphaComponent(0.95),
-            .kern: 1.4
-        ]
-        let attrStr = NSAttributedString(string: badgeText, attributes: pillAttrs)
-        let strSize = attrStr.size()
-        attrStr.draw(at: CGPoint(x: center.x - strSize.width / 2, y: cardRect.maxY + 8))
-    }
-
-    drawPedestal(
-        center: leftCenter,
-        borderTint: NSColor(calibratedRed: 0.22, green: 0.84, blue: 1.0, alpha: 0.55),
-        badgeText: "AURASENSE"
-    )
-    drawPedestal(
-        center: rightCenter,
-        borderTint: NSColor(calibratedRed: 0.18, green: 0.58, blue: 1.0, alpha: 0.55),
-        badgeText: "APPLICATIONS"
-    )
-
-    let chevronY = centerPoint.y
-    for i in -2...2 {
-        let cx = centerPoint.x + CGFloat(i * 20)
-        let alpha = 0.35 + CGFloat(i + 2) * 0.15
-        let chev = NSBezierPath()
-        chev.move(to: CGPoint(x: cx - 5, y: chevronY + 9))
-        chev.line(to: CGPoint(x: cx + 5, y: chevronY))
-        chev.line(to: CGPoint(x: cx - 5, y: chevronY - 9))
-        chev.lineWidth = 2.4
-        chev.lineCapStyle = .round
-        chev.lineJoinStyle = .round
-        NSColor(calibratedRed: 0.24, green: 0.86, blue: 1.0, alpha: alpha).setStroke()
-        chev.stroke()
-    }
-
-    let brandFont = NSFont.systemFont(ofSize: 26, weight: .light)
-    let brandStr = NSMutableAttributedString()
-    brandStr.append(NSAttributedString(
-        string: "Λ U R Λ ",
+    let caption = NSAttributedString(
+        string: "Drag AuraSense to Applications to install",
         attributes: [
-            .font: brandFont,
-            .foregroundColor: NSColor.white,
-            .kern: 4.5
-        ]
-    ))
-    brandStr.append(NSAttributedString(
-        string: "S E N S E",
-        attributes: [
-            .font: brandFont,
-            .foregroundColor: NSColor(calibratedRed: 0.26, green: 0.84, blue: 1.0, alpha: 1.0),
-            .kern: 4.5
-        ]
-    ))
-    let titleSize = brandStr.size()
-    brandStr.draw(at: CGPoint(x: centerPoint.x - titleSize.width / 2, y: logicalH - 60))
-
-    let subStr = NSAttributedString(
-        string: "Bluetooth proximity lock and unlock for your Mac",
-        attributes: [
-            .font: NSFont.systemFont(ofSize: 12.5, weight: .regular),
-            .foregroundColor: NSColor(calibratedRed: 0.68, green: 0.84, blue: 0.98, alpha: 0.88)
+            .font: NSFont.systemFont(ofSize: 12, weight: .regular),
+            .foregroundColor: NSColor(calibratedWhite: 0.0, alpha: 0.45)
         ]
     )
-    let subSize = subStr.size()
-    subStr.draw(at: CGPoint(x: centerPoint.x - subSize.width / 2, y: logicalH - 84))
-
-    let footerRect = CGRect(x: 110, y: 24, width: logicalW - 220, height: 40)
-    let footerPath = NSBezierPath(roundedRect: footerRect, xRadius: 12, yRadius: 12)
-    NSColor(calibratedRed: 0.05, green: 0.09, blue: 0.18, alpha: 0.82).setFill()
-    footerPath.fill()
-    footerPath.lineWidth = 1.0
-    NSColor(calibratedRed: 0.22, green: 0.78, blue: 1.0, alpha: 0.35).setStroke()
-    footerPath.stroke()
-
-    let footerText = NSAttributedString(
-        string: "Drag AuraSense into Applications to install",
-        attributes: [
-            .font: NSFont.systemFont(ofSize: 12, weight: .medium),
-            .foregroundColor: NSColor(calibratedWhite: 0.92, alpha: 0.95)
-        ]
-    )
-    let fSize = footerText.size()
-    footerText.draw(at: CGPoint(x: centerPoint.x - fSize.width / 2, y: footerRect.midY - fSize.height / 2))
+    let cSize = caption.size()
+    caption.draw(at: CGPoint(x: (logicalW - cSize.width) / 2, y: 52))
 
     NSGraphicsContext.restoreGraphicsState()
     rep.size = NSSize(width: logicalW, height: logicalH)
